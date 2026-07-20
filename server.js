@@ -7,11 +7,12 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const dns = require('dns');
+const http = require('http');
+const { Server } = require('socket.io');
 require('dotenv').config();
+const User = require('./models/User.model');
 
-// Force IPv4 resolution to prevent serverless IPv6 outbound timeouts (MongoDB Atlas & SMTP)
-dns.setDefaultResultOrder('ipv4first');
-
+// DNS override removed for local environment
 // Import routes
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
@@ -20,8 +21,60 @@ const questionRoutes = require('./routes/question.routes');
 const resultRoutes = require('./routes/result.routes');
 const adminRoutes = require('./routes/admin.routes');
 const notificationRoutes = require('./routes/notification.routes');
+const chatRoutes = require('./routes/chat.routes');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+app.set('io', io);
+
+// Socket connection logic
+const connectedUsers = new Map();
+
+io.on('connection', (socket) => {
+  console.log('A user connected:', socket.id);
+
+  socket.on('join_room', async (userId) => {
+    socket.join(userId);
+    connectedUsers.set(socket.id, userId);
+    
+    try {
+      await User.findByIdAndUpdate(userId, { isOnline: true });
+      socket.broadcast.emit('user_online', userId);
+    } catch (err) {
+      console.error('Error updating online status:', err);
+    }
+    console.log(`User ${userId} joined their personal room`);
+  });
+
+  socket.on('typing', (data) => {
+    // data should contain { receiverId, senderId }
+    socket.to(data.receiverId).emit('typing', { senderId: data.senderId });
+  });
+
+  socket.on('stop_typing', (data) => {
+    socket.to(data.receiverId).emit('stop_typing', { senderId: data.senderId });
+  });
+
+  socket.on('disconnect', async () => {
+    const userId = connectedUsers.get(socket.id);
+    if (userId) {
+      try {
+        await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date() });
+        socket.broadcast.emit('user_offline', userId);
+      } catch (err) {
+        console.error('Error updating offline status:', err);
+      }
+      connectedUsers.delete(socket.id);
+    }
+    console.log('User disconnected:', socket.id);
+  });
+});
 
 // Security middleware
 app.use(helmet({
@@ -64,28 +117,15 @@ app.use(morgan('dev'));
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Database connection (Optimized for Vercel Serverless)
-const connectDB = async () => {
-  if (mongoose.connection.readyState >= 1) {
-    return;
-  }
-  try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      maxPoolSize: 10,
-    });
-    console.log('Connected to MongoDB');
-  } catch (err) {
-    console.error('MongoDB connection error:', err);
-  }
-};
-
-// Vercel Serverless: Ensure database connection is active on EVERY request
-app.use(async (req, res, next) => {
-  await connectDB();
-  next();
-});
+// Database connection
+mongoose.connect(process.env.MONGODB_URI, {
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 10,
+  family: 4, // Force IPv4 to prevent querySrv ECONNREFUSED bug
+})
+.then(() => console.log('Connected to MongoDB'))
+.catch((err) => console.error('MongoDB connection error:', err));
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -95,6 +135,8 @@ app.use('/api/questions', questionRoutes);
 app.use('/api/results', resultRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/classes', require('./routes/classGroup.routes'));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -123,8 +165,8 @@ if (!fs.existsSync('uploads')) {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-module.exports = app;
+module.exports = { app, server, io };

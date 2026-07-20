@@ -26,10 +26,12 @@ router.post('/create',
   async (req, res) => {
     try {
       const { questions, ...examData } = req.body;
+      const classGroup = examData.classGroup || 'General';
       
       // Create exam
       const exam = new Exam({
         ...examData,
+        classGroup,
         createdBy: req.userId,
         status: 'published',
         totalQuestions: questions.length
@@ -44,10 +46,19 @@ router.post('/create',
         order: index
       }));
       
-      await Question.insertMany(questionDocs);
+      try {
+        await Question.insertMany(questionDocs);
+      } catch (insertError) {
+        await Exam.findByIdAndDelete(exam._id);
+        throw insertError;
+      }
       
       // Create notification for students
-      const students = await User.find({ role: 'student', isActive: true });
+      const queryParams = { role: 'student', isActive: true };
+      if (classGroup !== 'General') {
+        queryParams.classGroup = classGroup;
+      }
+      const students = await User.find(queryParams);
       const notifications = students.map(student => ({
         userId: student._id,
         type: 'exam_created',
@@ -58,6 +69,23 @@ router.post('/create',
       
       if (notifications.length > 0) {
         await Notification.insertMany(notifications);
+      }
+      
+      // Notify Admins about new exam
+      try {
+        const admins = await User.find({ role: 'admin' });
+        if (admins.length > 0) {
+          const adminNotifs = admins.map(admin => ({
+            userId: admin._id,
+            type: 'exam_created',
+            title: 'New Exam Created',
+            message: `A new exam "${exam.title}" has been created.`,
+            data: { examId: exam._id }
+          }));
+          await Notification.insertMany(adminNotifs);
+        }
+      } catch (notifErr) {
+        console.error('Error sending admin notification on exam creation:', notifErr);
       }
       
       res.status(201).json({
@@ -118,8 +146,16 @@ router.get('/teacher-exams',
       
       const total = await Exam.countDocuments(query);
       
+      // Fetch question counts
+      const Question = require('../models/Question.model');
+      const examsWithCounts = await Promise.all(exams.map(async (exam) => {
+        const doc = exam.toObject ? exam.toObject() : exam;
+        doc.totalQuestions = await Question.countDocuments({ examId: exam._id, isActive: true });
+        return doc;
+      }));
+      
       res.json({
-        exams,
+        exams: examsWithCounts,
         total,
         page: parseInt(page),
         totalPages: Math.ceil(total / parseInt(limit))
@@ -181,8 +217,11 @@ router.get('/:examId',
         isActive: true 
       }).sort({ order: 1 });
       
+      const examDoc = exam.toObject ? exam.toObject() : exam;
+      examDoc.totalQuestions = questions.length;
+      
       res.json({
-        exam,
+        exam: examDoc,
         questions
       });
     } catch (error) {
@@ -490,12 +529,23 @@ router.get('/student/exams',
   roleMiddleware('student'),
   async (req, res) => {
     try {
+      const user = await User.findById(req.userId);
+      const studentClassGroup = user?.classGroup || 'General';
       const now = new Date();
       
-      // Get all published, ongoing, and completed exams
-      const exams = await Exam.find({ 
-        status: { $in: ['published', 'ongoing', 'completed'] }
-      })
+      let filterQuery = { status: { $in: ['published', 'ongoing', 'completed'] } };
+      
+      // If student is NOT in 'General' class, they only see their class's exams and exams meant for 'General'
+      if (studentClassGroup !== 'General') {
+        filterQuery.$or = [
+          { classGroup: { $regex: new RegExp(studentClassGroup, 'i') } },
+          { classGroup: { $regex: new RegExp('General', 'i') } },
+          { classGroup: { $exists: false } }
+        ];
+      }
+      
+      // Get exams
+      const exams = await Exam.find(filterQuery)
       .sort({ date: 1, startTime: 1 })
       .populate('createdBy', 'name email');
       

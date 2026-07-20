@@ -48,6 +48,20 @@ const userSchema = new mongoose.Schema({
     type: Number,
     min: 0
   },
+  classGroup: {
+    type: String,
+    trim: true,
+    default: 'General'
+  },
+  pendingClassGroup: {
+    type: String,
+    trim: true
+  },
+  classChangeStatus: {
+    type: String,
+    enum: ['none', 'pending', 'approved', 'rejected'],
+    default: 'none'
+  },
   address: {
     type: String,
     trim: true
@@ -58,6 +72,14 @@ const userSchema = new mongoose.Schema({
   },
   lastLogin: {
     type: Date
+  },
+  isOnline: {
+    type: Boolean,
+    default: false
+  },
+  lastSeen: {
+    type: Date,
+    default: Date.now
   },
   refreshToken: {
     type: String

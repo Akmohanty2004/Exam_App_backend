@@ -21,7 +21,7 @@ router.post('/submit',
   ]),
   async (req, res) => {
     try {
-      const { examId, answers, timeTaken, tabSwitches = 0 } = req.body;
+      const { examId, answers, timeTaken, tabSwitches = 0, isCheated = false } = req.body;
 
       // Check if exam exists and is available
       const exam = await Exam.findById(examId);
@@ -51,7 +51,18 @@ router.post('/submit',
 
       const processedAnswers = questions.map(question => {
         const studentAnswer = answers.find(a => a.questionId === question._id.toString());
-        const isCorrect = studentAnswer && studentAnswer.selectedAnswer === question.correctAnswer;
+        let isCorrect = false;
+        if (studentAnswer) {
+          if (question.type === 'mcq') {
+            const correctOptIdx = parseInt(question.correctAnswer, 10);
+            const correctOpt = question.options[correctOptIdx];
+            if (correctOpt) {
+              isCorrect = String(studentAnswer.selectedAnswer).trim() === String(correctOpt.text).trim();
+            }
+          } else {
+            isCorrect = String(studentAnswer.selectedAnswer).trim() === String(question.correctAnswer).trim();
+          }
+        }
         
         let marksObtained = 0;
         if (studentAnswer) {
@@ -107,6 +118,7 @@ router.post('/submit',
         unattempted,
         timeTaken,
         tabSwitches,
+        isCheated,
         status: 'submitted',
         submittedAt: new Date()
       });
@@ -146,7 +158,13 @@ router.post('/submit',
           isPassed,
           correctAnswers,
           wrongAnswers,
-          unattempted
+          unattempted,
+          detailedAnswers: processedAnswers.map((pa, idx) => ({
+            ...pa,
+            questionText: questions[idx].question,
+            correctAnswer: questions[idx].correctAnswer,
+            options: questions[idx].options
+          }))
         }
       });
     } catch (error) {
@@ -166,7 +184,8 @@ router.get('/my-results',
         studentId: req.userId,
         status: 'submitted'
       })
-      .populate('examId', 'title subject date startTime endTime')
+      .populate('examId', 'title subject date startTime endTime duration maxMarks')
+      .populate('answers.questionId', 'question options correctAnswer marks')
       .sort({ submittedAt: -1 });
 
       // Check if results are published and calculate rank
@@ -193,6 +212,35 @@ router.get('/my-results',
     }
   }
 );
+
+// Get specific student results (for Teacher/Admin)
+router.get('/student/:studentId',
+  authMiddleware,
+  roleMiddleware('teacher', 'admin'),
+  async (req, res) => {
+    try {
+      const results = await Result.find({ 
+        studentId: req.params.studentId,
+        status: 'published' 
+      })
+        .populate('examId', 'title subject maxMarks passingMarks')
+        .sort({ createdAt: -1 });
+
+      const formattedResults = results.map(result => {
+        let obtained = result.obtainedMarks || 0;
+        let total = result.totalMarks || 1;
+        return {
+          ...result.toObject(),
+          percentage: (obtained / total) * 100
+        };
+      });
+
+      res.json({ results: formattedResults });
+    } catch (error) {
+      console.error('Get specific student results error:', error);
+      res.status(500).json({ message: 'Server error' });
+    }
+});
 
 // Get exam results for teacher/admin
 router.get('/exam/:examId',
@@ -293,7 +341,26 @@ router.put('/:examId/publish',
         data: { examId: exam._id, resultId: result._id }
       }));
 
-      await Notification.insertMany(notifications);
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications);
+      }
+      
+      // Notify Admins
+      try {
+        const admins = await User.find({ role: 'admin' });
+        if (admins.length > 0) {
+          const adminNotifs = admins.map(admin => ({
+            userId: admin._id,
+            type: 'result_published',
+            title: 'Exam Results Published',
+            message: `Results for "${exam.title}" have been published.`,
+            data: { examId: exam._id }
+          }));
+          await Notification.insertMany(adminNotifs);
+        }
+      } catch (notifErr) {
+        console.error('Error sending admin notification on result publish:', notifErr);
+      }
 
       res.json({
         message: 'Results published successfully',
@@ -305,5 +372,146 @@ router.put('/:examId/publish',
     }
   }
 );
+
+// Get student leaderboard (top scores globally or for a specific classGroup)
+router.get('/leaderboard', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    const classGroup = user?.classGroup || 'General';
+
+    // Find all results, populate student info, filter by classGroup and passing score
+    const allResults = await Result.find({ status: 'published', isPassed: true })
+      .populate({
+        path: 'studentId',
+        select: 'name profileImage classGroup',
+        match: { classGroup: { $in: [classGroup, 'General'] } }
+      })
+      .populate({
+        path: 'examId',
+        select: 'title subject'
+      });
+
+    // Filter out results where studentId is null (meaning they didn't match the classGroup)
+    const validResults = allResults.filter(r => r.studentId != null);
+
+    // Group by student to get their average score or total score
+    const studentStats = {};
+    validResults.forEach(r => {
+      const sId = r.studentId._id.toString();
+      if (!studentStats[sId]) {
+        studentStats[sId] = {
+          studentId: r.studentId,
+          totalScore: 0,
+          examsTaken: 0
+        };
+      }
+      studentStats[sId].totalScore += r.percentage;
+      studentStats[sId].examsTaken += 1;
+    });
+
+    // Calculate averages and format array
+    const leaderboard = Object.values(studentStats).map(stat => ({
+      ...stat,
+      averageScore: stat.totalScore / stat.examsTaken
+    }));
+
+    // Sort descending by average score
+    leaderboard.sort((a, b) => b.averageScore - a.averageScore);
+
+    res.json({ leaderboard: leaderboard.slice(0, 10) }); // Top 10
+  } catch (error) {
+    console.error('Leaderboard error:', error);
+    res.status(500).json({ message: 'Failed to fetch leaderboard' });
+  }
+});
+
+// Get toppers for published exams
+router.get('/toppers', authMiddleware, async (req, res) => {
+  try {
+    let query = { isResultPublished: true };
+    if (req.user.role === 'teacher') {
+      query.createdBy = req.user.id;
+    } else if (req.user.role === 'admin') {
+      // Admins see all
+    } else {
+      const userClass = req.user.classGroup || 'General';
+      if (userClass !== 'General') {
+        query.$or = [
+          { classGroup: { $regex: new RegExp(userClass, 'i') } },
+          { classGroup: 'General' },
+          { classGroup: { $exists: false } }
+        ];
+      } else {
+        query.$or = [{ classGroup: 'General' }, { classGroup: { $exists: false } }];
+      }
+    }
+
+    // Find published exams
+    const exams = await Exam.find(query).select('title date');
+
+    const examIds = exams.map(e => e._id);
+    
+    // For each exam, find the highest result
+    const toppers = [];
+    for (const exam of exams) {
+      const topResult = await Result.findOne({ examId: exam._id, status: { $ne: 'pending' }, isPassed: true })
+        .sort('-percentage')
+        .populate('studentId', 'name profileImage')
+        .select('studentId percentage likes');
+      
+      if (topResult && topResult.studentId) {
+        toppers.push({
+          examId: exam._id,
+          examTitle: exam.title,
+          examDate: exam.date,
+          resultId: topResult._id,
+          student: topResult.studentId,
+          score: topResult.percentage,
+          likes: topResult.likes || [],
+          likedByMe: topResult.likes?.map(id => id.toString()).includes(req.userId?.toString()) || false
+        });
+      }
+    }
+    
+    // Sort toppers by exam date descending
+    toppers.sort((a, b) => new Date(b.examDate) - new Date(a.examDate));
+
+    res.json({ toppers });
+  } catch (error) {
+    console.error('Get toppers error:', error);
+    res.status(500).json({ message: 'Failed to fetch toppers' });
+  }
+});
+
+// Like/Unlike a topper's result
+router.post('/:id/like', authMiddleware, async (req, res) => {
+  try {
+    const resultId = req.params.id;
+    const result = await Result.findById(resultId);
+    if (!result) return res.status(404).json({ message: 'Result not found' });
+
+    const userId = req.userId.toString();
+    const likeIndex = result.likes.findIndex(id => id.toString() === userId);
+    
+    if (likeIndex === -1) {
+      // Like
+      result.likes.push(userId);
+    } else {
+      // Unlike
+      result.likes.splice(likeIndex, 1);
+    }
+    
+    await result.save();
+    
+    res.json({ 
+      message: likeIndex === -1 ? 'Liked' : 'Unliked',
+      likes: result.likes,
+      likedByMe: likeIndex === -1
+    });
+  } catch (error) {
+    console.error('Like error:', error);
+    res.status(500).json({ message: 'Failed to toggle like' });
+  }
+});
 
 module.exports = router;

@@ -62,6 +62,16 @@ const resultSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  ipAddress: String,
+  deviceInfo: String,
+  likes: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  isCheated: {
+    type: Boolean,
+    default: false
+  },
   timeTaken: {
     type: Number, // in minutes
     default: 0

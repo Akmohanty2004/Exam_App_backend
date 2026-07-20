@@ -21,11 +21,14 @@ const storage = multer.diskStorage({
 
 // File filter
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+  const allowedTypes = [
+    'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+    'audio/m4a', 'audio/mp4', 'audio/aac', 'audio/mpeg', 'audio/mp3', 'audio/x-m4a', 'audio/3gpp', 'audio/x-caf', 'audio/caf', 'audio/x-m4a'
+  ];
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Only images are allowed.'), false);
+    cb(new Error('Invalid file type. Only images and audio are allowed.'), false);
   }
 };
 
@@ -37,6 +40,15 @@ const uploadSingle = multer({
     fileSize: 5 * 1024 * 1024 // 5MB limit
   }
 }).single('image');
+
+// Multer configuration for chat files (image or audio)
+const chatFileUpload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit for chat files
+  }
+}).fields([{ name: 'image', maxCount: 1 }, { name: 'audio', maxCount: 1 }]);
 
 // Multer configuration for multiple images
 const uploadMultiple = multer({
@@ -77,6 +89,7 @@ module.exports = {
   uploadSingle,
   uploadMultiple,
   uploadProfileImage,
+  chatFileUpload,
   handleUploadError,
   cloudinary: null // Not using cloudinary in this version
 };

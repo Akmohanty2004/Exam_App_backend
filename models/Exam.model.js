@@ -11,6 +11,11 @@ const examSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  classGroup: {
+    type: String,
+    trim: true,
+    default: 'General'
+  },
   description: {
     type: String,
     trim: true
@@ -90,9 +95,9 @@ const examSchema = new mongoose.Schema({
     type: Number,
     default: 1
   },
-  entryTime: {
+  plannedQuestions: {
     type: Number,
-    default: 15
+    default: 0
   },
   status: {
     type: String,

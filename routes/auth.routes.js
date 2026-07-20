@@ -5,6 +5,7 @@ const { validate, commonValidations } = require('../middleware/validation.middle
 const { authMiddleware } = require('../middleware/auth.middleware');
 const User = require('../models/User.model');
 const OTP = require('../models/OTP.model');
+const Notification = require('../models/Notification.model');
 const sendEmail = require('../utils/sendEmail');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
@@ -152,7 +153,7 @@ router.post('/register',
 router.post('/verify-register',
   async (req, res) => {
     try {
-      const { name, email, password, role, phone, department, college, gender, age, address, otp, adminOtp } = req.body;
+      const { name, email, password, role, phone, department, college, gender, age, address, classGroup, otp, adminOtp } = req.body;
 
       // Check OTP
       const otpRecord = await OTP.findOne({ email, otp });
@@ -184,11 +185,28 @@ router.post('/verify-register',
         college,
         gender,
         age,
-        address
+        address,
+        classGroup
       });
 
       await user.save();
       await OTP.deleteOne({ email }); // Delete OTP after successful use
+
+      // Notify Admins
+      try {
+        const admins = await User.find({ role: 'admin' });
+        if (admins.length > 0) {
+          const adminNotifs = admins.map(admin => ({
+            userId: admin._id,
+            type: 'personal',
+            title: 'New User Registered',
+            message: `${name} has registered as a ${role}.`
+          }));
+          await Notification.insertMany(adminNotifs);
+        }
+      } catch (notifErr) {
+        console.error('Error sending admin notification on registration:', notifErr);
+      }
 
       res.status(201).json({
         message: 'User registered successfully. Please login to continue.',
@@ -213,7 +231,10 @@ router.post('/login',
 
       // Check if admin
       if (role === 'admin') {
-        if (email !== process.env.ADMIN_EMAIL || password !== process.env.ADMIN_PASSWORD) {
+        const adminEmail = process.env.ADMIN_EMAIL || 'ashiskumarmohanty738@gmail.com';
+        const adminPassword = process.env.ADMIN_PASSWORD || 'Akmohanty';
+        
+        if (email !== adminEmail || password !== adminPassword) {
           return res.status(401).json({ message: 'Invalid admin credentials' });
         }
       } else {
@@ -268,6 +289,7 @@ router.post('/verify-login',
       const { email, password, role, otp } = req.body;
 
       // Check OTP
+      console.log('Verify-login request:', { email, password, role, otp });
       const otpRecord = await OTP.findOne({ email, otp });
       if (!otpRecord) {
         return res.status(400).json({ message: 'Invalid or expired OTP' });
@@ -305,7 +327,7 @@ router.post('/verify-login',
         await user.save();
         userToReturn = {
           id: user._id, name: user.name, email: user.email, role: user.role, profileImage: user.profileImage,
-          department: user.department, college: user.college, phone: user.phone, age: user.age, gender: user.gender, address: user.address
+          department: user.department, college: user.college, phone: user.phone, age: user.age, gender: user.gender, address: user.address, classGroup: user.classGroup
         };
       }
 

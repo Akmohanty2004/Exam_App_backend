@@ -23,7 +23,7 @@ const validate = (validations) => {
 const commonValidations = {
   email: body('email')
     .isEmail()
-    .withMessage('Please provide a valid email')
+    .withMessage('Please provide a valid User ID / Email')
     .normalizeEmail(),
   
   password: body('password')
