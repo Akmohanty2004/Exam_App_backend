@@ -182,7 +182,7 @@ router.get('/my-results',
     try {
       const results = await Result.find({ 
         studentId: req.userId,
-        status: 'submitted'
+        status: { $in: ['submitted', 'checked', 'published'] }
       })
       .populate('examId', 'title subject date startTime endTime duration maxMarks')
       .populate('answers.questionId', 'question options correctAnswer marks')
@@ -193,14 +193,14 @@ router.get('/my-results',
         const exam = await Exam.findById(result.examId);
         let rank = null;
         
-        if (exam.isResultPublished) {
-          const allExamResults = await Result.find({ examId: result.examId, status: 'submitted' }).sort({ obtainedMarks: -1 });
+        if (exam && exam.isResultPublished) {
+          const allExamResults = await Result.find({ examId: result.examId, status: { $in: ['submitted', 'checked', 'published'] } }).sort({ obtainedMarks: -1 });
           rank = allExamResults.findIndex(r => r.studentId.toString() === result.studentId.toString()) + 1;
         }
         
         return {
           ...result.toObject(),
-          isPublished: exam.isResultPublished,
+          isPublished: true,
           rank: rank
         };
       }));
@@ -208,7 +208,7 @@ router.get('/my-results',
       res.json({ results: resultsWithPublishStatus });
     } catch (error) {
       console.error('Get student results error:', error);
-      res.status(500).json({ message: 'Failed to get results' });
+      res.status(500).json({ message: 'Error fetching results' });
     }
   }
 );
@@ -216,12 +216,11 @@ router.get('/my-results',
 // Get specific student results (for Teacher/Admin)
 router.get('/student/:studentId',
   authMiddleware,
-  roleMiddleware('teacher', 'admin'),
   async (req, res) => {
     try {
       const results = await Result.find({ 
         studentId: req.params.studentId,
-        status: 'published' 
+        status: { $in: ['submitted', 'checked', 'published'] }
       })
         .populate('examId', 'title subject maxMarks passingMarks')
         .sort({ createdAt: -1 });
@@ -380,7 +379,7 @@ router.get('/leaderboard', authMiddleware, async (req, res) => {
     const classGroup = user?.classGroup || 'General';
 
     // Find all results, populate student info, filter by classGroup and passing score
-    const allResults = await Result.find({ status: 'published', isPassed: true })
+    const allResults = await Result.find({ status: { $in: ['submitted', 'checked', 'published'] } })
       .populate({
         path: 'studentId',
         select: 'name profileImage classGroup',

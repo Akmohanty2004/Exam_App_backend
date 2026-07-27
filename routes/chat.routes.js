@@ -37,24 +37,26 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
   try {
     const { receiverId, content, messageType, meetingLink } = req.body;
     const senderId = req.user.id;
-    let imageUrl = '';
-    let audioUrl = '';
+    let imageUrl = req.body.imageUrl || '';
+    let audioUrl = req.body.audioUrl || '';
 
     if (req.files) {
       if (req.files.image && req.files.image.length > 0) {
         try {
-          const imgBuffer = fs.readFileSync(req.files.image[0].path);
-          imageUrl = `data:${req.files.image[0].mimetype || 'image/jpeg'};base64,${imgBuffer.toString('base64')}`;
+          const file = req.files.image[0];
+          const imgBuffer = file.buffer || fs.readFileSync(file.path);
+          imageUrl = `data:${file.mimetype || 'image/jpeg'};base64,${imgBuffer.toString('base64')}`;
         } catch (err) {
-          imageUrl = req.files.image[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/');
+          imageUrl = imageUrl || (req.files.image[0].path ? req.files.image[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/') : '');
         }
       }
       if (req.files.audio && req.files.audio.length > 0) {
         try {
-          const audioBuffer = fs.readFileSync(req.files.audio[0].path);
-          audioUrl = `data:${req.files.audio[0].mimetype || 'audio/m4a'};base64,${audioBuffer.toString('base64')}`;
+          const file = req.files.audio[0];
+          const audioBuffer = file.buffer || fs.readFileSync(file.path);
+          audioUrl = `data:${file.mimetype || 'audio/m4a'};base64,${audioBuffer.toString('base64')}`;
         } catch (err) {
-          audioUrl = req.files.audio[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/');
+          audioUrl = audioUrl || (req.files.audio[0].path ? req.files.audio[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/') : '');
         }
       }
     }

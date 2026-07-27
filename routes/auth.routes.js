@@ -98,7 +98,7 @@ router.post('/register',
   ]),
   async (req, res) => {
     try {
-      const { email } = req.body;
+      const email = (req.body.email || '').toLowerCase().trim();
 
       // Check if user already exists
       const existingUser = await User.findOne({ email });
@@ -153,7 +153,8 @@ router.post('/register',
 router.post('/verify-register',
   async (req, res) => {
     try {
-      const { name, email, password, role, phone, department, college, gender, age, address, classGroup, otp, adminOtp } = req.body;
+      const email = (req.body.email || '').toLowerCase().trim();
+      const { name, password, role, phone, department, college, gender, age, address, classGroup, otp, adminOtp } = req.body;
 
       // Check OTP
       const otpRecord = await OTP.findOne({ email, otp });
@@ -227,11 +228,12 @@ router.post('/login',
   ]),
   async (req, res) => {
     try {
-      const { email, password, role } = req.body;
+      const email = (req.body.email || '').toLowerCase().trim();
+      const { password, role } = req.body;
 
       // Check if admin
       if (role === 'admin') {
-        const adminEmail = process.env.ADMIN_EMAIL || 'ashiskumarmohanty738@gmail.com';
+        const adminEmail = (process.env.ADMIN_EMAIL || 'ashiskumarmohanty738@gmail.com').toLowerCase().trim();
         const adminPassword = process.env.ADMIN_PASSWORD || 'Akmohanty';
         
         if (email !== adminEmail || password !== adminPassword) {
@@ -239,9 +241,12 @@ router.post('/login',
         }
       } else {
         // Check user
-        const user = await User.findOne({ email, role });
+        const user = await User.findOne({ email });
         if (!user) {
-          return res.status(401).json({ message: `No ${role} found with this email` });
+          return res.status(401).json({ message: 'No account found with this email' });
+        }
+        if (role && user.role !== role) {
+          return res.status(401).json({ message: `This account is registered as a ${user.role}. Please select ${user.role} to login.` });
         }
         if (!user.isActive) {
           return res.status(401).json({ message: 'Account is deactivated' });
@@ -286,7 +291,8 @@ router.post('/login',
 router.post('/verify-login',
   async (req, res) => {
     try {
-      const { email, password, role, otp } = req.body;
+      const email = (req.body.email || '').toLowerCase().trim();
+      const { password, role, otp } = req.body;
 
       // Check OTP
       console.log('Verify-login request:', { email, password, role, otp });
@@ -299,7 +305,9 @@ router.post('/verify-login',
       let token;
 
       if (role === 'admin') {
-        if (email !== process.env.ADMIN_EMAIL || password !== process.env.ADMIN_PASSWORD) {
+        const adminEmail = (process.env.ADMIN_EMAIL || 'ashiskumarmohanty738@gmail.com').toLowerCase().trim();
+        const adminPassword = process.env.ADMIN_PASSWORD || 'Akmohanty';
+        if (email !== adminEmail || password !== adminPassword) {
           return res.status(401).json({ message: 'Invalid admin credentials' });
         }
         let admin = await User.findOne({ email, role: 'admin' });
@@ -318,13 +326,13 @@ router.post('/verify-login',
         await admin.save();
         userToReturn = { id: admin._id, name: admin.name, email: admin.email, role: 'admin', profileImage: admin.profileImage };
       } else {
-        const user = await User.findOne({ email, role });
-        if (!user || !user.isActive || !(await user.comparePassword(password))) {
+        const user = await User.findOne({ email });
+        if (!user || !user.isActive || (role && user.role !== role) || !(await user.comparePassword(password))) {
           return res.status(401).json({ message: 'Invalid credentials' });
         }
         token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRE || '7d' });
         user.lastLogin = new Date();
-        await user.save();
+        await User.updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
         userToReturn = {
           id: user._id, name: user.name, email: user.email, role: user.role, profileImage: user.profileImage,
           department: user.department, college: user.college, phone: user.phone, age: user.age, gender: user.gender, address: user.address, classGroup: user.classGroup

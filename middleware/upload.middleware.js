@@ -48,7 +48,7 @@ const uploadSingle = multer({
 
 // Multer configuration for chat files (image or audio)
 const chatFileUpload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),
   fileFilter: fileFilter,
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB limit for chat files
