@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs');
 const router = express.Router();
 const { authMiddleware } = require('../middleware/auth.middleware');
 const Message = require('../models/Message.model');
@@ -41,10 +42,20 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
 
     if (req.files) {
       if (req.files.image && req.files.image.length > 0) {
-        imageUrl = req.files.image[0].path;
+        try {
+          const imgBuffer = fs.readFileSync(req.files.image[0].path);
+          imageUrl = `data:${req.files.image[0].mimetype || 'image/jpeg'};base64,${imgBuffer.toString('base64')}`;
+        } catch (err) {
+          imageUrl = req.files.image[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/');
+        }
       }
       if (req.files.audio && req.files.audio.length > 0) {
-        audioUrl = req.files.audio[0].path;
+        try {
+          const audioBuffer = fs.readFileSync(req.files.audio[0].path);
+          audioUrl = `data:${req.files.audio[0].mimetype || 'audio/m4a'};base64,${audioBuffer.toString('base64')}`;
+        } catch (err) {
+          audioUrl = req.files.audio[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/');
+        }
       }
     }
 
@@ -52,7 +63,7 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
       sender: senderId,
       receiver: receiverId,
       content,
-      messageType: messageType || (imageUrl ? 'image' : 'text'),
+      messageType: messageType || (audioUrl ? 'audio' : (imageUrl ? 'image' : 'text')),
       imageUrl,
       audioUrl,
       meetingLink
