@@ -2,16 +2,21 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// Ensure uploads directory exists
-const uploadDir = 'uploads';
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+// Ensure uploads directory exists (use /tmp/uploads in Vercel serverless environment)
+const uploadDir = process.env.VERCEL ? '/tmp/uploads' : 'uploads';
+try {
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+} catch (err) {
+  console.log('Uploads directory creation skipped (read-only filesystem):', err.message);
 }
 
 // Local storage configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    const dir = process.env.VERCEL ? '/tmp/uploads/' : 'uploads/';
+    cb(null, dir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);

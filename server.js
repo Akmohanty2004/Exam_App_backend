@@ -115,17 +115,20 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(morgan('dev'));
 
 // Static files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+const uploadPath = process.env.VERCEL ? '/tmp/uploads' : path.join(__dirname, 'uploads');
+app.use('/uploads', express.static(uploadPath));
 
 // Database connection
-mongoose.connect(process.env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-  maxPoolSize: 10,
-  family: 4, // Force IPv4 to prevent querySrv ECONNREFUSED bug
-})
-.then(() => console.log('Connected to MongoDB'))
-.catch((err) => console.error('MongoDB connection error:', err));
+if (mongoose.connection.readyState === 0) {
+  mongoose.connect(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+    maxPoolSize: 10,
+    family: 4, // Force IPv4 to prevent querySrv ECONNREFUSED bug
+  })
+  .then(() => console.log('Connected to MongoDB'))
+  .catch((err) => console.error('MongoDB connection error:', err));
+}
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -157,16 +160,26 @@ app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
 
-// Create uploads directory if it doesn't exist
+// Create uploads directory if it doesn't exist (use /tmp/uploads in Vercel serverless environment)
 const fs = require('fs');
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
+try {
+  const uploadDir = process.env.VERCEL ? '/tmp/uploads' : 'uploads';
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+} catch (err) {
+  console.log('Uploads directory creation skipped (read-only filesystem):', err.message);
 }
 
 const PORT = process.env.PORT || 5000;
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+if (!process.env.VERCEL) {
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
 
-module.exports = { app, server, io };
+// Export Express app for Vercel Serverless Function compatibility (@vercel/node)
+app.server = server;
+app.io = io;
+module.exports = app;
