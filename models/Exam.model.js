@@ -147,6 +147,8 @@ const examSchema = new mongoose.Schema({
 // Index for faster queries
 examSchema.index({ createdBy: 1, status: 1 });
 examSchema.index({ date: 1, startTime: 1 });
+examSchema.index({ status: 1, classGroup: 1 });
+examSchema.index({ isResultPublished: 1, createdAt: -1 });
 
 const Exam = mongoose.model('Exam', examSchema);
 

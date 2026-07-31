@@ -4,11 +4,12 @@ const { authMiddleware, roleMiddleware } = require('../middleware/auth.middlewar
 const User = require('../models/User.model');
 const Result = require('../models/Result.model');
 const { uploadProfileImage, handleUploadError } = require('../middleware/upload.middleware');
+const { uploadToCloudinary } = require('../utils/cloudinary');
 
 // Get current user profile
 router.get('/profile', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select('-password -refreshToken -resetPasswordToken -resetPasswordExpire');
+    const user = await User.findById(req.userId).select('-password -refreshToken -resetPasswordToken -resetPasswordExpire').lean();
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -16,6 +17,21 @@ router.get('/profile', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ message: 'Failed to get profile' });
+  }
+});
+
+// Save Expo push token for background/closed app notifications
+router.post('/push-token', authMiddleware, async (req, res) => {
+  try {
+    const { pushToken } = req.body;
+    if (!pushToken) {
+      return res.status(400).json({ message: 'Push token required' });
+    }
+    await User.findByIdAndUpdate(req.user.id, { expoPushToken: pushToken });
+    res.json({ message: 'Push token saved successfully' });
+  } catch (error) {
+    console.error('Save push token error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -66,19 +82,19 @@ router.post('/upload-profile-image',
         return res.status(400).json({ message: 'No image uploaded' });
       }
 
-      // Convert buffer to Base64 string
-      const base64Image = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+      // Upload image to Cloudinary
+      const cloudinaryUrl = await uploadToCloudinary(req.file.buffer, 'profiles', 'image');
 
       const user = await User.findByIdAndUpdate(
         req.userId,
-        { profileImage: base64Image },
+        { profileImage: cloudinaryUrl },
         { new: true }
       ).select('-password -refreshToken -resetPasswordToken -resetPasswordExpire');
 
       res.json({
         message: 'Profile image uploaded successfully',
         user,
-        imageUrl: base64Image
+        imageUrl: cloudinaryUrl
       });
     } catch (error) {
       console.error('Upload profile image error:', error);
@@ -123,11 +139,10 @@ router.put('/change-password', authMiddleware, async (req, res) => {
 // Get all students and their performance (teacher only)
 router.get('/students-performance', authMiddleware, roleMiddleware('teacher'), async (req, res) => {
   try {
-    // Get all students
-    const students = await User.find({ role: 'student' }).select('name email classGroup profileImage');
-    
-    // Get all results to calculate average scores
-    const results = await Result.find({ status: { $ne: 'pending' } });
+    const [students, results] = await Promise.all([
+      User.find({ role: 'student' }).select('name email classGroup profileImage').lean(),
+      Result.find({ status: { $ne: 'pending' } }).select('studentId percentage status').lean()
+    ]);
     
     // Calculate stats per student
     const studentStats = students.map(student => {
@@ -156,14 +171,15 @@ router.get('/students-performance', authMiddleware, roleMiddleware('teacher'), a
 // Get all users (admin only)
 router.get('/all', authMiddleware, async (req, res) => {
   try {
-    const currentUser = await User.findById(req.userId);
+    const currentUser = await User.findById(req.userId).select('role').lean();
     if (currentUser.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied. Admin only.' });
     }
 
     const users = await User.find()
       .select('-password -refreshToken -resetPasswordToken -resetPasswordExpire')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.json({ users });
   } catch (error) {
@@ -175,13 +191,14 @@ router.get('/all', authMiddleware, async (req, res) => {
 // Get user by ID (admin only)
 router.get('/:userId', authMiddleware, async (req, res) => {
   try {
-    const currentUser = await User.findById(req.userId);
+    const currentUser = await User.findById(req.userId).select('role').lean();
     if (currentUser.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied. Admin only.' });
     }
 
     const user = await User.findById(req.params.userId)
-      .select('-password -refreshToken -resetPasswordToken -resetPasswordExpire');
+      .select('-password -refreshToken -resetPasswordToken -resetPasswordExpire')
+      .lean();
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
@@ -219,7 +236,8 @@ router.post('/request-class-change', authMiddleware, async (req, res) => {
 router.get('/class-requests/pending', authMiddleware, roleMiddleware('teacher'), async (req, res) => {
   try {
     const students = await User.find({ role: 'student', classChangeStatus: 'pending' })
-      .select('name email classGroup pendingClassGroup');
+      .select('name email classGroup pendingClassGroup')
+      .lean();
     res.json({ requests: students });
   } catch (error) {
     console.error('Get class requests error:', error);

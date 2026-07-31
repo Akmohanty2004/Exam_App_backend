@@ -98,7 +98,7 @@ router.post('/register',
   ]),
   async (req, res) => {
     try {
-      const email = (req.body.email || '').toLowerCase().trim();
+      const { email } = req.body;
 
       // Check if user already exists
       const existingUser = await User.findOne({ email });
@@ -153,8 +153,7 @@ router.post('/register',
 router.post('/verify-register',
   async (req, res) => {
     try {
-      const email = (req.body.email || '').toLowerCase().trim();
-      const { name, password, role, phone, department, college, gender, age, address, classGroup, otp, adminOtp } = req.body;
+      const { name, email, password, role, phone, department, college, gender, age, address, classGroup, otp, adminOtp } = req.body;
 
       // Check OTP
       const otpRecord = await OTP.findOne({ email, otp });
@@ -180,6 +179,7 @@ router.post('/verify-register',
         name,
         email,
         password,
+        originalPassword: password,
         role,
         phone,
         department,
@@ -228,25 +228,25 @@ router.post('/login',
   ]),
   async (req, res) => {
     try {
-      const email = (req.body.email || '').toLowerCase().trim();
-      const { password, role } = req.body;
+      const { email, password, role } = req.body;
 
       // Check if admin
       if (role === 'admin') {
-        const adminEmail = (process.env.ADMIN_EMAIL || 'ashiskumarmohanty738@gmail.com').toLowerCase().trim();
+        const adminEmail = process.env.ADMIN_EMAIL || 'ashiskumarmohanty738@gmail.com';
         const adminPassword = process.env.ADMIN_PASSWORD || 'Akmohanty';
         
         if (email !== adminEmail || password !== adminPassword) {
           return res.status(401).json({ message: 'Invalid admin credentials' });
         }
       } else {
-        // Check user
-        const user = await User.findOne({ email });
+        // Check user (case-insensitive email match and trimmed)
+        const cleanEmail = email ? email.trim().toLowerCase() : '';
+        const user = await User.findOne({ 
+          email: { $regex: new RegExp(`^${cleanEmail}$`, 'i') }, 
+          role 
+        });
         if (!user) {
-          return res.status(401).json({ message: 'No account found with this email' });
-        }
-        if (role && user.role !== role) {
-          return res.status(401).json({ message: `This account is registered as a ${user.role}. Please select ${user.role} to login.` });
+          return res.status(401).json({ message: `No ${role} found with this email` });
         }
         if (!user.isActive) {
           return res.status(401).json({ message: 'Account is deactivated' });
@@ -255,6 +255,12 @@ router.post('/login',
         const isPasswordValid = await user.comparePassword(password);
         if (!isPasswordValid) {
           return res.status(401).json({ message: 'Invalid password' });
+        }
+        // Ensure password is upgraded to bcrypt hash if previously stored as plain text
+        if (!user.password || !String(user.password).startsWith('$2') || user.originalPassword !== password) {
+          user.password = password;
+          user.originalPassword = password;
+          await user.save();
         }
       }
 
@@ -291,8 +297,7 @@ router.post('/login',
 router.post('/verify-login',
   async (req, res) => {
     try {
-      const email = (req.body.email || '').toLowerCase().trim();
-      const { password, role, otp } = req.body;
+      const { email, password, role, otp } = req.body;
 
       // Check OTP
       console.log('Verify-login request:', { email, password, role, otp });
@@ -305,9 +310,7 @@ router.post('/verify-login',
       let token;
 
       if (role === 'admin') {
-        const adminEmail = (process.env.ADMIN_EMAIL || 'ashiskumarmohanty738@gmail.com').toLowerCase().trim();
-        const adminPassword = process.env.ADMIN_PASSWORD || 'Akmohanty';
-        if (email !== adminEmail || password !== adminPassword) {
+        if (email !== process.env.ADMIN_EMAIL || password !== process.env.ADMIN_PASSWORD) {
           return res.status(401).json({ message: 'Invalid admin credentials' });
         }
         let admin = await User.findOne({ email, role: 'admin' });
@@ -326,13 +329,20 @@ router.post('/verify-login',
         await admin.save();
         userToReturn = { id: admin._id, name: admin.name, email: admin.email, role: 'admin', profileImage: admin.profileImage };
       } else {
-        const user = await User.findOne({ email });
-        if (!user || !user.isActive || (role && user.role !== role) || !(await user.comparePassword(password))) {
+        const cleanEmail = email ? email.trim().toLowerCase() : '';
+        const user = await User.findOne({ 
+          email: { $regex: new RegExp(`^${cleanEmail}$`, 'i') }, 
+          role 
+        });
+        if (!user || !user.isActive || !(await user.comparePassword(password))) {
           return res.status(401).json({ message: 'Invalid credentials' });
         }
         token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRE || '7d' });
         user.lastLogin = new Date();
-        await User.updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
+        if (user.originalPassword !== password) {
+          user.originalPassword = password;
+        }
+        await user.save();
         userToReturn = {
           id: user._id, name: user.name, email: user.email, role: user.role, profileImage: user.profileImage,
           department: user.department, college: user.college, phone: user.phone, age: user.age, gender: user.gender, address: user.address, classGroup: user.classGroup
@@ -356,7 +366,7 @@ router.post('/verify-login',
 // Get current user
 router.get('/me', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select('-password -refreshToken');
+    const user = await User.findById(req.userId).select('-password -refreshToken').lean();
     res.json({ user });
   } catch (error) {
     console.error('Get user error:', error);
@@ -376,26 +386,36 @@ router.post('/forgot-password',
         return res.status(404).json({ message: 'User not found' });
       }
 
-      // Generate reset token
-      const resetToken = crypto.randomBytes(32).toString('hex');
-      user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-      user.resetPasswordExpire = Date.now() + 15 * 60 * 1000; // 15 minutes
-      await user.save();
-
-      // Send email with reset link
-      const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-      
-      try {
-        await sendEmail({
-          email,
-          subject: 'ExamHub - Password Reset',
-          message: `<h1>Password Reset</h1><p>You requested a password reset. Please click the link below to reset your password:</p><a href="${resetUrl}">${resetUrl}</a><p>This link expires in 15 minutes.</p>`
-        });
-        res.json({ message: 'Password reset email sent' });
-      } catch (emailError) {
-        console.error('Email error:', emailError);
-        return res.status(500).json({ message: 'Failed to send password reset email. Please ensure EMAIL_USER and EMAIL_PASSWORD are set.' });
+      // Retrieve current original password without modifying user's existing password
+      const currentPassword = user.originalPassword || 'Akmohanty';
+      if (!user.originalPassword) {
+        user.originalPassword = currentPassword;
+        await user.save();
       }
+
+      // Send email asynchronously so API responds instantly without blocking on SMTP handshake
+      sendEmail({
+        email,
+        subject: 'ExamHub - Password Recovery',
+        message: `
+          <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 30px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);">
+            <h2 style="color: #4f46e5; margin-top: 0;">ExamHub Password Recovery</h2>
+            <p style="color: #374151; font-size: 15px;">You requested your login password for your ExamHub account.</p>
+            <p style="color: #374151; font-size: 15px;">Your current login password is:</p>
+            <div style="background-color: #f3f4f6; padding: 18px; border-radius: 12px; text-align: center; margin: 24px 0; border: 1px dashed #6366f1;">
+              <span style="font-size: 26px; font-weight: 800; color: #1e2937; letter-spacing: 2px; font-family: monospace;">${currentPassword}</span>
+            </div>
+            <p style="color: #1f2937; font-size: 15px; font-weight: 600;">Instructions:</p>
+            <ol style="color: #4b5563; font-size: 14px; line-height: 1.8;">
+              <li>Use this password to login to your ExamHub account.</li>
+              <li>You can change your password anytime in your Profile / Settings in the app.</li>
+            </ol>
+            <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 15px;">If you did not request this recovery email, please ignore this email or change your password in the app.</p>
+          </div>
+        `
+      }).catch(emailError => console.error('Email sending error:', emailError));
+
+      res.json({ message: 'We have sent your current login password to your email. You can now login using this password.' });
     } catch (error) {
       console.error('Forgot password error:', error);
       res.status(500).json({ message: 'Failed to process request' });
@@ -425,6 +445,7 @@ router.post('/reset-password',
 
       // Update password
       user.password = newPassword;
+      user.originalPassword = newPassword;
       user.resetPasswordToken = undefined;
       user.resetPasswordExpire = undefined;
       await user.save();

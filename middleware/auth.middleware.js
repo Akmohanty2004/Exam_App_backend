@@ -24,7 +24,7 @@ const authMiddleware = async (req, res, next) => {
     const oneMinAgo = new Date(Date.now() - 60 * 1000);
     if (!user.lastLogin || user.lastLogin < oneMinAgo) {
       user.lastLogin = new Date();
-      await User.updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
+      await user.save();
     }
 
     req.user = user;

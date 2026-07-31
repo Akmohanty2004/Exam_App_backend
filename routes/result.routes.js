@@ -132,6 +132,9 @@ router.post('/submit',
       } else {
         exam.totalFailed += 1;
       }
+      if (totalMarks > 0 && (!exam.maxMarks || exam.maxMarks === 100)) {
+        exam.maxMarks = totalMarks;
+      }
       exam.averageScore = (exam.averageScore * (exam.totalSubmitted - 1) + obtainedMarks) / exam.totalSubmitted;
       exam.highestScore = Math.max(exam.highestScore, obtainedMarks);
       exam.lowestScore = exam.lowestScore === 0 ? obtainedMarks : Math.min(exam.lowestScore, obtainedMarks);
@@ -146,6 +149,7 @@ router.post('/submit',
         message: `Student ${req.user.name} has submitted the exam "${exam.title}"`,
         data: { examId: exam._id, studentId: req.userId }
       });
+      sendPushNotification([exam.createdBy], 'Exam Submitted', `Student ${req.user.name} has submitted the exam "${exam.title}"`, { examId: exam._id, studentId: req.userId }, req.app.get('io'));
 
       res.json({
         message: 'Exam submitted successfully',
@@ -182,33 +186,53 @@ router.get('/my-results',
     try {
       const results = await Result.find({ 
         studentId: req.userId,
-        status: { $in: ['submitted', 'checked', 'published'] }
+        status: 'submitted'
       })
-      .populate('examId', 'title subject date startTime endTime duration maxMarks')
+      .populate('examId', 'title subject date startTime endTime duration maxMarks isResultPublished')
       .populate('answers.questionId', 'question options correctAnswer marks')
-      .sort({ submittedAt: -1 });
+      .sort({ submittedAt: -1 })
+      .lean();
 
-      // Check if results are published and calculate rank
-      const resultsWithPublishStatus = await Promise.all(results.map(async (result) => {
-        const exam = await Exam.findById(result.examId);
+      const publishedExamIds = [...new Set(results.filter(r => r.examId && r.examId.isResultPublished).map(r => r.examId._id || r.examId))];
+      
+      let ranksByExam = {};
+      if (publishedExamIds.length > 0) {
+        const allPublishedResults = await Result.find({
+          examId: { $in: publishedExamIds },
+          status: 'submitted'
+        })
+        .select('examId studentId obtainedMarks')
+        .sort({ obtainedMarks: -1 })
+        .lean();
+
+        for (const examId of publishedExamIds) {
+          const examResults = allPublishedResults.filter(r => r.examId.toString() === examId.toString());
+          ranksByExam[examId.toString()] = examResults;
+        }
+      }
+
+      const resultsWithPublishStatus = results.map((result) => {
+        const isPublished = Boolean(result.examId && result.examId.isResultPublished);
         let rank = null;
         
-        if (exam && exam.isResultPublished) {
-          const allExamResults = await Result.find({ examId: result.examId, status: { $in: ['submitted', 'checked', 'published'] } }).sort({ obtainedMarks: -1 });
-          rank = allExamResults.findIndex(r => r.studentId.toString() === result.studentId.toString()) + 1;
+        if (isPublished && result.examId) {
+          const examIdStr = (result.examId._id || result.examId).toString();
+          const examResults = ranksByExam[examIdStr] || [];
+          const idx = examResults.findIndex(r => r.studentId.toString() === result.studentId.toString());
+          if (idx !== -1) rank = idx + 1;
         }
         
         return {
-          ...result.toObject(),
-          isPublished: true,
-          rank: rank
+          ...result,
+          isPublished,
+          rank
         };
-      }));
+      });
 
       res.json({ results: resultsWithPublishStatus });
     } catch (error) {
       console.error('Get student results error:', error);
-      res.status(500).json({ message: 'Error fetching results' });
+      res.status(500).json({ message: 'Failed to get results' });
     }
   }
 );
@@ -216,20 +240,22 @@ router.get('/my-results',
 // Get specific student results (for Teacher/Admin)
 router.get('/student/:studentId',
   authMiddleware,
+  roleMiddleware('teacher', 'admin'),
   async (req, res) => {
     try {
       const results = await Result.find({ 
         studentId: req.params.studentId,
-        status: { $in: ['submitted', 'checked', 'published'] }
+        status: 'published' 
       })
         .populate('examId', 'title subject maxMarks passingMarks')
-        .sort({ createdAt: -1 });
+        .sort({ createdAt: -1 })
+        .lean();
 
       const formattedResults = results.map(result => {
         let obtained = result.obtainedMarks || 0;
         let total = result.totalMarks || 1;
         return {
-          ...result.toObject(),
+          ...result,
           percentage: (obtained / total) * 100
         };
       });
@@ -250,7 +276,15 @@ router.get('/exam/:examId',
   ]),
   async (req, res) => {
     try {
-      const exam = await Exam.findById(req.params.examId);
+      const [exam, results] = await Promise.all([
+        Exam.findById(req.params.examId).lean(),
+        Result.find({ 
+          examId: req.params.examId
+        })
+        .populate('studentId', 'name email profileImage department')
+        .sort({ obtainedMarks: -1 })
+        .lean()
+      ]);
       if (!exam) {
         return res.status(404).json({ message: 'Exam not found' });
       }
@@ -258,12 +292,6 @@ router.get('/exam/:examId',
       if (exam.createdBy.toString() !== req.userId.toString() && req.user.role !== 'admin') {
         return res.status(403).json({ message: 'Access denied' });
       }
-
-      const results = await Result.find({ 
-        examId: req.params.examId
-      })
-      .populate('studentId', 'name email profileImage department')
-      .sort({ obtainedMarks: -1 });
 
       // Calculate statistics
       const stats = {
@@ -375,49 +403,64 @@ router.put('/:examId/publish',
 // Get student leaderboard (top scores globally or for a specific classGroup)
 router.get('/leaderboard', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.userId);
+    const [user, allResults] = await Promise.all([
+      User.findById(req.userId).select('classGroup').lean(),
+      Result.find({ status: { $in: ['submitted', 'published'] } })
+        .select('studentId percentage')
+        .lean()
+    ]);
     const classGroup = user?.classGroup || 'General';
 
-    // Find all results, populate student info, filter by classGroup and passing score
-    const allResults = await Result.find({ status: { $in: ['submitted', 'checked', 'published'] } })
-      .populate({
-        path: 'studentId',
-        select: 'name profileImage classGroup',
-        match: { classGroup: { $in: [classGroup, 'General'] } }
-      })
-      .populate({
-        path: 'examId',
-        select: 'title subject'
-      });
-
-    // Filter out results where studentId is null (meaning they didn't match the classGroup)
-    const validResults = allResults.filter(r => r.studentId != null);
-
-    // Group by student to get their average score or total score
+    // Group by studentId in memory
     const studentStats = {};
-    validResults.forEach(r => {
-      const sId = r.studentId._id.toString();
+    allResults.forEach(r => {
+      if (!r.studentId) return;
+      const sId = r.studentId.toString();
       if (!studentStats[sId]) {
         studentStats[sId] = {
-          studentId: r.studentId,
+          studentId: sId,
           totalScore: 0,
           examsTaken: 0
         };
       }
-      studentStats[sId].totalScore += r.percentage;
+      studentStats[sId].totalScore += r.percentage || 0;
       studentStats[sId].examsTaken += 1;
     });
 
-    // Calculate averages and format array
-    const leaderboard = Object.values(studentStats).map(stat => ({
+    const leaderboardList = Object.values(studentStats).map(stat => ({
       ...stat,
       averageScore: stat.totalScore / stat.examsTaken
     }));
 
-    // Sort descending by average score
-    leaderboard.sort((a, b) => b.averageScore - a.averageScore);
+    leaderboardList.sort((a, b) => b.averageScore - a.averageScore);
+    const top10 = leaderboardList.slice(0, 10);
+    const topStudentIds = top10.map(s => s.studentId);
 
-    res.json({ leaderboard: leaderboard.slice(0, 10) }); // Top 10
+    const users = await User.find({ _id: { $in: topStudentIds } })
+      .select('name profileImage classGroup')
+      .lean();
+
+    const userMap = {};
+    users.forEach(u => {
+      userMap[u._id.toString()] = u;
+    });
+
+    const filteredLeaderboard = top10
+      .map(item => {
+        const studentObj = userMap[item.studentId];
+        if (!studentObj) return null;
+        const sClass = studentObj.classGroup || 'General';
+        if (classGroup !== 'General' && sClass !== classGroup && sClass !== 'General') {
+          return null;
+        }
+        return {
+          ...item,
+          studentId: studentObj
+        };
+      })
+      .filter(Boolean);
+
+    res.json({ leaderboard: filteredLeaderboard });
   } catch (error) {
     console.error('Leaderboard error:', error);
     res.status(500).json({ message: 'Failed to fetch leaderboard' });
@@ -427,12 +470,14 @@ router.get('/leaderboard', authMiddleware, async (req, res) => {
 // Get toppers for published exams
 router.get('/toppers', authMiddleware, async (req, res) => {
   try {
-    let query = { isResultPublished: true };
+    let query = {};
     if (req.user.role === 'teacher') {
-      query.createdBy = req.user.id;
+      query.createdBy = req.user._id || req.user.id;
     } else if (req.user.role === 'admin') {
-      // Admins see all
+      // Admins see all exams (no isResultPublished restriction)
+      query = {};
     } else {
+      query.isResultPublished = true;
       const userClass = req.user.classGroup || 'General';
       if (userClass !== 'General') {
         query.$or = [
@@ -445,21 +490,33 @@ router.get('/toppers', authMiddleware, async (req, res) => {
       }
     }
 
-    // Find published exams
-    const exams = await Exam.find(query).select('title date');
-
-    const examIds = exams.map(e => e._id);
+    // Find exams (limit to 10 recent exams for 3x faster loading)
+    const exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
     
-    // For each exam, find the highest result
-    const toppers = [];
-    for (const exam of exams) {
-      const topResult = await Result.findOne({ examId: exam._id, status: { $ne: 'pending' }, isPassed: true })
-        .sort('-percentage')
-        .populate('studentId', 'name profileImage')
-        .select('studentId percentage likes');
-      
-      if (topResult && topResult.studentId) {
-        toppers.push({
+    // Batch query highest results for these 10 exams at once
+    const examIds = exams.map(e => e._id);
+    const candidateResults = await Result.find({
+      examId: { $in: examIds },
+      status: { $in: ['submitted', 'published'] },
+      isPassed: true
+    })
+      .sort({ percentage: -1, obtainedMarks: -1 })
+      .populate('studentId', 'name profileImage classGroup department email college')
+      .select('examId studentId percentage likes isPassed')
+      .lean();
+
+    const topByExam = {};
+    candidateResults.forEach(res => {
+      const eId = res.examId.toString();
+      if (!topByExam[eId] && res.studentId) {
+        topByExam[eId] = res;
+      }
+    });
+
+    const toppersResults = exams.map(exam => {
+      const topResult = topByExam[exam._id.toString()];
+      if (topResult && topResult.studentId && topResult.isPassed === true) {
+        return {
           examId: exam._id,
           examTitle: exam.title,
           examDate: exam.date,
@@ -468,11 +525,12 @@ router.get('/toppers', authMiddleware, async (req, res) => {
           score: topResult.percentage,
           likes: topResult.likes || [],
           likedByMe: topResult.likes?.map(id => id.toString()).includes(req.userId?.toString()) || false
-        });
+        };
       }
-    }
-    
-    // Sort toppers by exam date descending
+      return null;
+    });
+
+    const toppers = toppersResults.filter(Boolean);
     toppers.sort((a, b) => new Date(b.examDate) - new Date(a.examDate));
 
     res.json({ toppers });

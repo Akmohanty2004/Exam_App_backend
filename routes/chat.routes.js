@@ -5,6 +5,8 @@ const { authMiddleware } = require('../middleware/auth.middleware');
 const Message = require('../models/Message.model');
 const User = require('../models/User.model');
 const { uploadSingle, chatFileUpload } = require('../middleware/upload.middleware');
+const { uploadToCloudinary } = require('../utils/cloudinary');
+const { sendPushNotification } = require('../utils/pushNotification');
 
 // Fetch chat history between logged in user and another user
 router.get('/history/:userId', authMiddleware, async (req, res) => {
@@ -37,26 +39,30 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
   try {
     const { receiverId, content, messageType, meetingLink } = req.body;
     const senderId = req.user.id;
-    let imageUrl = req.body.imageUrl || '';
-    let audioUrl = req.body.audioUrl || '';
+    let imageUrl = '';
+    let audioUrl = '';
 
     if (req.files) {
       if (req.files.image && req.files.image.length > 0) {
+        const fileObj = req.files.image[0];
         try {
-          const file = req.files.image[0];
-          const imgBuffer = file.buffer || fs.readFileSync(file.path);
-          imageUrl = `data:${file.mimetype || 'image/jpeg'};base64,${imgBuffer.toString('base64')}`;
+          const imgBuffer = fileObj.buffer || (fileObj.path ? fs.readFileSync(fileObj.path) : null);
+          if (imgBuffer) {
+            imageUrl = await uploadToCloudinary(imgBuffer, 'chat/images', 'image');
+          }
         } catch (err) {
-          imageUrl = imageUrl || (req.files.image[0].path ? req.files.image[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/') : '');
+          console.error('Image Cloudinary upload error:', err);
         }
       }
       if (req.files.audio && req.files.audio.length > 0) {
+        const fileObj = req.files.audio[0];
         try {
-          const file = req.files.audio[0];
-          const audioBuffer = file.buffer || fs.readFileSync(file.path);
-          audioUrl = `data:${file.mimetype || 'audio/m4a'};base64,${audioBuffer.toString('base64')}`;
+          const audioBuffer = fileObj.buffer || (fileObj.path ? fs.readFileSync(fileObj.path) : null);
+          if (audioBuffer) {
+            audioUrl = await uploadToCloudinary(audioBuffer, 'chat/audio', 'video');
+          }
         } catch (err) {
-          audioUrl = audioUrl || (req.files.audio[0].path ? req.files.audio[0].path.replace(/\\/g, '/').replace(/^.*(uploads\/)/, 'uploads/') : '');
+          console.error('Audio Cloudinary upload error:', err);
         }
       }
     }
@@ -80,8 +86,18 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
     // Emit via socket
     const io = req.app.get('io');
     if (io) {
-      io.to(receiverId).emit('receive_message', populatedMessage);
+      io.to(String(receiverId)).emit('receive_message', populatedMessage);
+      io.to(String(senderId)).emit('receive_message', populatedMessage);
+      io.emit('receive_message', populatedMessage);
     }
+
+    sendPushNotification(
+      receiverId,
+      'New Message',
+      messageType === 'text' ? (message || 'New chat message') : `Sent a new ${messageType}`,
+      { messageId: newMessage._id, senderId },
+      io
+    );
 
     res.status(201).json(populatedMessage);
   } catch (error) {

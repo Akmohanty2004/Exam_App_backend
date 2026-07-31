@@ -12,7 +12,7 @@ const { Server } = require('socket.io');
 require('dotenv').config();
 const User = require('./models/User.model');
 
-// DNS override removed for local environment
+// No DNS override needed for standard seedlist
 // Import routes
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
@@ -34,22 +34,43 @@ const io = new Server(server, {
 app.set('io', io);
 
 // Socket connection logic
+// Socket connection logic
 const connectedUsers = new Map();
+const userSocketCounts = new Map();
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('join_room', async (userId) => {
-    socket.join(userId);
-    connectedUsers.set(socket.id, userId);
+    const room = String(userId);
+    socket.join(room);
+    connectedUsers.set(socket.id, room);
+    const count = (userSocketCounts.get(room) || 0) + 1;
+    userSocketCounts.set(room, count);
     
     try {
       await User.findByIdAndUpdate(userId, { isOnline: true });
-      socket.broadcast.emit('user_online', userId);
+      io.emit('user_online', room);
     } catch (err) {
       console.error('Error updating online status:', err);
     }
-    console.log(`User ${userId} joined their personal room`);
+    console.log(`User ${userId} joined their personal room (active sockets: ${count})`);
+  });
+
+  socket.on('check_online_status', async (targetUserId) => {
+    try {
+      const roomStr = String(targetUserId);
+      const isSocketConnected = (userSocketCounts.get(roomStr) || 0) > 0 || (io.sockets.adapter.rooms.get(roomStr)?.size || 0) > 0;
+      let dbOnline = false;
+      try {
+        const user = await User.findById(targetUserId).select('isOnline');
+        dbOnline = !!user?.isOnline;
+      } catch (e) {}
+      const isOnline = isSocketConnected || dbOnline;
+      socket.emit('user_status_response', { userId: targetUserId, isOnline });
+    } catch (err) {
+      console.error('Error checking user status:', err);
+    }
   });
 
   socket.on('typing', (data) => {
@@ -62,15 +83,21 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', async () => {
-    const userId = connectedUsers.get(socket.id);
+    const userId = connectedUsers.get(socket.id); 
     if (userId) {
-      try {
-        await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date() });
-        socket.broadcast.emit('user_offline', userId);
-      } catch (err) {
-        console.error('Error updating offline status:', err);
-      }
       connectedUsers.delete(socket.id);
+      const count = Math.max(0, (userSocketCounts.get(userId) || 1) - 1);
+      if (count === 0) {
+        userSocketCounts.delete(userId);
+        try {
+          await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date() });
+          io.emit('user_offline', String(userId));
+        } catch (err) {
+          console.error('Error updating offline status:', err);
+        }
+      } else {
+        userSocketCounts.set(userId, count);
+      }
     }
     console.log('User disconnected:', socket.id);
   });
@@ -96,6 +123,13 @@ app.use(cors({
   credentials: true,
 }));
 
+// HTTP Security headers (XSS protection, MIME sniffing protection, clickjacking defense)
+app.use(helmet({ 
+  contentSecurityPolicy: false, 
+  crossOriginResourcePolicy: { policy: "cross-origin" } 
+}));
+app.disable('x-powered-by');
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -119,16 +153,49 @@ const uploadPath = process.env.VERCEL ? '/tmp/uploads' : path.join(__dirname, 'u
 app.use('/uploads', express.static(uploadPath));
 
 // Database connection
-if (mongoose.connection.readyState === 0) {
-  mongoose.connect(process.env.MONGODB_URI, {
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-    maxPoolSize: 10,
-    family: 4, // Force IPv4 to prevent querySrv ECONNREFUSED bug
-  })
-  .then(() => console.log('Connected to MongoDB'))
-  .catch((err) => console.error('MongoDB connection error:', err));
-}
+let dbConnectPromise = null;
+const connectDB = async () => {
+  if (mongoose.connection.readyState === 1) {
+    return;
+  }
+  if (dbConnectPromise) {
+    return dbConnectPromise;
+  }
+  dbConnectPromise = (async () => {
+    try {
+      await mongoose.connect(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 10000,
+        connectTimeoutMS: 10000,
+        socketTimeoutMS: 45000,
+        maxPoolSize: 20,
+      });
+      console.log('Connected to MongoDB Atlas');
+    } catch (error) {
+      console.error('MongoDB Atlas connection error:', error.message);
+    } finally {
+      dbConnectPromise = null;
+    }
+  })();
+  return dbConnectPromise;
+};
+
+connectDB();
+
+// Health check & ping (before DB check for immediate response)
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'OK', message: 'Server is running' });
+});
+app.get('/api/ping', (req, res) => res.status(200).json({ status: 'OK' }));
+app.head('/api/ping', (req, res) => res.status(200).end());
+
+app.use('/api', async (req, res, next) => {
+  if (req.path === '/ping' || req.path === '/health') return next();
+  if (mongoose.connection.readyState !== 1) {
+    await connectDB();
+  }
+  next();
+});
+
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -140,11 +207,6 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/classes', require('./routes/classGroup.routes'));
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'OK', message: 'Server is running' });
-});
 
 // Error handling middleware
 app.use((err, req, res, next) => {

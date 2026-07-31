@@ -8,6 +8,7 @@ const Question = require('../models/Question.model');
 const Result = require('../models/Result.model');
 const User = require('../models/User.model');
 const Notification = require('../models/Notification.model');
+const { sendPushNotification } = require('../utils/pushNotification');
 
 // ==================== CREATE EXAM ====================
 router.post('/create',
@@ -69,6 +70,8 @@ router.post('/create',
       
       if (notifications.length > 0) {
         await Notification.insertMany(notifications);
+        const studentIds = students.map(s => s._id);
+        sendPushNotification(studentIds, 'New Exam Available', `New exam "${exam.title}" has been created`, { examId: exam._id }, req.app.get('io'));
       }
       
       // Notify Admins about new exam
@@ -83,6 +86,8 @@ router.post('/create',
             data: { examId: exam._id }
           }));
           await Notification.insertMany(adminNotifs);
+          const adminIds = admins.map(a => a._id);
+          sendPushNotification(adminIds, 'New Exam Created', `A new exam "${exam.title}" has been created.`, { examId: exam._id }, req.app.get('io'));
         }
       } catch (notifErr) {
         console.error('Error sending admin notification on exam creation:', notifErr);
@@ -113,14 +118,30 @@ router.get('/teacher-exams',
       
       const skip = (parseInt(page) - 1) * parseInt(limit);
       
-      let exams = await Exam.find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .populate('createdBy', 'name email');
+      const [exams, total] = await Promise.all([
+        Exam.find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(parseInt(limit))
+          .populate('createdBy', 'name email')
+          .lean(),
+        Exam.countDocuments(query)
+      ]);
         
       const now = new Date();
-      for (let exam of exams) {
+      const Question = require('../models/Question.model');
+      
+      const examIds = exams.map(e => e._id);
+      const questionCounts = await Question.aggregate([
+        { $match: { examId: { $in: examIds }, isActive: true } },
+        { $group: { _id: '$examId', count: { $sum: 1 } } }
+      ]);
+      const countMap = {};
+      questionCounts.forEach(item => {
+        countMap[item._id.toString()] = item.count;
+      });
+      
+      const examsWithCounts = exams.map((exam) => {
         if (exam.status === 'published' || exam.status === 'ongoing') {
           const examDate = new Date(exam.date);
           const [startHours, startMinutes] = exam.startTime.split(':');
@@ -139,20 +160,12 @@ router.get('/teacher-exams',
 
           if (newStatus !== exam.status) {
             exam.status = newStatus;
-            await exam.save();
+            Exam.updateOne({ _id: exam._id }, { status: newStatus }).exec().catch(() => {});
           }
         }
-      }
-      
-      const total = await Exam.countDocuments(query);
-      
-      // Fetch question counts
-      const Question = require('../models/Question.model');
-      const examsWithCounts = await Promise.all(exams.map(async (exam) => {
-        const doc = exam.toObject ? exam.toObject() : exam;
-        doc.totalQuestions = await Question.countDocuments({ examId: exam._id, isActive: true });
-        return doc;
-      }));
+
+        return { ...exam, totalQuestions: countMap[exam._id.toString()] || exam.totalQuestions || 0 };
+      });
       
       res.json({
         exams: examsWithCounts,
@@ -175,8 +188,10 @@ router.get('/:examId',
   ]),
   async (req, res) => {
     try {
-      const exam = await Exam.findById(req.params.examId)
-        .populate('createdBy', 'name email');
+      const [exam, questions] = await Promise.all([
+        Exam.findById(req.params.examId).populate('createdBy', 'name email').lean(),
+        Question.find({ examId: req.params.examId, isActive: true }).sort({ order: 1 }).lean()
+      ]);
       
       if (!exam) {
         return res.status(404).json({ message: 'Exam not found' });
@@ -202,7 +217,7 @@ router.get('/:examId',
 
         if (newStatus !== exam.status) {
           exam.status = newStatus;
-          await exam.save();
+          Exam.updateOne({ _id: exam._id }, { status: newStatus }).exec().catch(() => {});
         }
       }
       
@@ -211,14 +226,7 @@ router.get('/:examId',
         return res.status(403).json({ message: 'Access denied' });
       }
       
-      // Get questions for this exam
-      const questions = await Question.find({ 
-        examId: exam._id, 
-        isActive: true 
-      }).sort({ order: 1 });
-      
-      const examDoc = exam.toObject ? exam.toObject() : exam;
-      examDoc.totalQuestions = questions.length;
+      const examDoc = { ...exam, totalQuestions: questions.length };
       
       res.json({
         exam: examDoc,
@@ -529,7 +537,7 @@ router.get('/student/exams',
   roleMiddleware('student'),
   async (req, res) => {
     try {
-      const user = await User.findById(req.userId);
+      const user = await User.findById(req.userId).select('classGroup').lean();
       const studentClassGroup = user?.classGroup || 'General';
       const now = new Date();
       
@@ -544,32 +552,30 @@ router.get('/student/exams',
         ];
       }
       
-      // Get exams
-      const exams = await Exam.find(filterQuery)
-      .sort({ date: 1, startTime: 1 })
-      .populate('createdBy', 'name email');
-      
-      // Get student results to check which exams are taken
-      const studentResults = await Result.find({
-        studentId: req.userId,
-        examId: { $in: exams.map(e => e._id) }
-      });
+      const [exams, studentResults] = await Promise.all([
+        Exam.find(filterQuery)
+          .sort({ date: 1, startTime: 1 })
+          .populate('createdBy', 'name email')
+          .lean(),
+        Result.find({ studentId: req.userId })
+          .select('examId status obtainedMarks percentage isPassed')
+          .lean()
+      ]);
       
       const examIdsTaken = studentResults.map(r => r.examId.toString());
       
       // Add status to each exam
-      const examsWithStatus = exams.map(exam => {
-        const examObj = exam.toObject();
-        const isTaken = examIdsTaken.includes(exam._id.toString());
-        const result = studentResults.find(r => r.examId.toString() === exam._id.toString());
+      const examsWithStatus = exams.map(examObj => {
+        const isTaken = examIdsTaken.includes(examObj._id.toString());
+        const result = studentResults.find(r => r.examId.toString() === examObj._id.toString());
         
         // Check if exam is available
-        const examDate = new Date(exam.date);
-        const [startHours, startMinutes] = exam.startTime.split(':');
+        const examDate = new Date(examObj.date);
+        const [startHours, startMinutes] = examObj.startTime.split(':');
         examDate.setHours(parseInt(startHours), parseInt(startMinutes), 0, 0);
         
-        const endDateTime = new Date(exam.date);
-        const [endHours, endMinutes] = exam.endTime.split(':');
+        const endDateTime = new Date(examObj.date);
+        const [endHours, endMinutes] = examObj.endTime.split(':');
         endDateTime.setHours(parseInt(endHours), parseInt(endMinutes), 0, 0);
         
         const isAvailable = now >= examDate && now <= endDateTime;
@@ -603,8 +609,13 @@ router.get('/:examId/student',
   ]),
   async (req, res) => {
     try {
-      const exam = await Exam.findById(req.params.examId)
-        .populate('createdBy', 'name email');
+      const [exam, existingResult] = await Promise.all([
+        Exam.findById(req.params.examId).populate('createdBy', 'name email').lean(),
+        Result.findOne({
+          examId: req.params.examId,
+          studentId: req.userId
+        }).lean()
+      ]);
       
       if (!exam) {
         return res.status(404).json({ message: 'Exam not found' });
@@ -616,11 +627,6 @@ router.get('/:examId/student',
       }
       
       // Check if student has already taken this exam
-      const existingResult = await Result.findOne({
-        examId: exam._id,
-        studentId: req.userId
-      });
-      
       if (existingResult && existingResult.status === 'submitted') {
         return res.status(400).json({ message: 'You have already taken this exam' });
       }
@@ -662,7 +668,7 @@ router.get('/:examId/student',
       let questions = await Question.find({ 
         examId: exam._id, 
         isActive: true 
-      }).sort({ order: 1 });
+      }).sort({ order: 1 }).lean();
       
       // Randomize if enabled
       if (exam.randomQuestions) {
@@ -671,7 +677,7 @@ router.get('/:examId/student',
       
       // Hide correct answers
       const questionsWithHiddenAnswers = questions.map(q => {
-        const qObj = q.toObject();
+        const qObj = { ...q };
         delete qObj.correctAnswer;
         return qObj;
       });

@@ -24,6 +24,9 @@ const storage = multer.diskStorage({
   }
 });
 
+// Memory storage for saving as base64 in MongoDB
+const memoryStorage = multer.memoryStorage();
+
 // File filter
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
@@ -48,7 +51,7 @@ const uploadSingle = multer({
 
 // Multer configuration for chat files (image or audio)
 const chatFileUpload = multer({
-  storage: multer.memoryStorage(),
+  storage: memoryStorage,
   fileFilter: fileFilter,
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB limit for chat files
@@ -63,9 +66,6 @@ const uploadMultiple = multer({
     fileSize: 5 * 1024 * 1024 // 5MB limit per file
   }
 }).array('images', 10);
-
-// Memory storage for profile images (to save as base64 in MongoDB)
-const memoryStorage = multer.memoryStorage();
 
 // Multer configuration for profile image
 const uploadProfileImage = multer({

@@ -19,6 +19,9 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  originalPassword: {
+    type: String
+  },
   phone: {
     type: String,
     trim: true
@@ -84,6 +87,10 @@ const userSchema = new mongoose.Schema({
   refreshToken: {
     type: String
   },
+  expoPushToken: {
+    type: String,
+    default: ''
+  },
   resetPasswordToken: String,
   resetPasswordExpire: Date,
   createdAt: {
@@ -101,6 +108,10 @@ const userSchema = new mongoose.Schema({
 // Hash password before saving
 userSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
+  // Prevent double-hashing if password is already a bcrypt hash
+  if (this.password && typeof this.password === 'string' && this.password.startsWith('$2') && this.password.length === 60) {
+    return next();
+  }
   
   try {
     const salt = await bcrypt.genSalt(10);
@@ -113,7 +124,29 @@ userSchema.pre('save', async function(next) {
 
 // Compare password method
 userSchema.methods.comparePassword = async function(password) {
-  return await bcrypt.compare(password, this.password);
+  if (!password) return false;
+  const cleanPassword = String(password).trim();
+  const dbPassword = String(this.password || '').trim();
+  const origPassword = String(this.originalPassword || '').trim();
+
+  // 1. Check direct match (for passwords stored as plain text or in originalPassword)
+  if (cleanPassword === dbPassword || cleanPassword === origPassword || password === this.password || password === this.originalPassword) {
+    return true;
+  }
+
+  // 2. Try bcrypt.compare with exact password
+  try {
+    const isMatch = await bcrypt.compare(password, this.password);
+    if (isMatch) return true;
+  } catch (err) {}
+
+  // 3. Try bcrypt.compare with trimmed password
+  try {
+    const isTrimMatch = await bcrypt.compare(cleanPassword, this.password);
+    if (isTrimMatch) return true;
+  } catch (err) {}
+
+  return false;
 };
 
 // Check if user is admin
@@ -130,6 +163,11 @@ userSchema.methods.isTeacher = function() {
 userSchema.methods.isStudent = function() {
   return this.role === 'student';
 };
+
+// Indexes for faster filtering and counting
+userSchema.index({ role: 1, isActive: 1 });
+userSchema.index({ classGroup: 1, role: 1 });
+userSchema.index({ isOnline: 1 });
 
 const User = mongoose.model('User', userSchema);
 

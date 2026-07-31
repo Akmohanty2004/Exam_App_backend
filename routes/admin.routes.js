@@ -12,6 +12,10 @@ router.get('/dashboard-stats',
   roleMiddleware('admin'),
   async (req, res) => {
     try {
+      const currentYear = new Date().getFullYear();
+      const oneDayAgo = new Date();
+      oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+
       const [
         totalUsers,
         totalTeachers,
@@ -21,7 +25,13 @@ router.get('/dashboard-stats',
         completedExams,
         totalResults,
         totalPassed,
-        totalFailed
+        totalFailed,
+        recentExams,
+        recentResults,
+        examStats,
+        monthlyExams,
+        monthlyResults,
+        activeUsers
       ] = await Promise.all([
         User.countDocuments(),
         User.countDocuments({ role: 'teacher' }),
@@ -31,65 +41,55 @@ router.get('/dashboard-stats',
         Exam.countDocuments({ status: 'completed' }),
         Result.countDocuments({ status: 'submitted' }),
         Result.countDocuments({ status: 'submitted', isPassed: true }),
-        Result.countDocuments({ status: 'submitted', isPassed: false })
-      ]);
-
-      // Get recent exams
-      const recentExams = await Exam.find()
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .populate('createdBy', 'name');
-
-      // Get recent results
-      const recentResults = await Result.find()
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .populate('studentId', 'name')
-        .populate('examId', 'title');
-
-      // Get exam statistics by subject
-      const examStats = await Exam.aggregate([
-        {
-          $group: {
-            _id: '$subject',
-            count: { $sum: 1 },
-            totalStudents: { $sum: '$totalStudents' },
-            averageScore: { $avg: '$averageScore' }
-          }
-        }
-      ]);
-
-      const currentYear = new Date().getFullYear();
-      const monthlyExams = await Exam.aggregate([
-        {
-          $match: {
-            createdAt: {
-              $gte: new Date(`${currentYear}-01-01`),
-              $lt: new Date(`${currentYear + 1}-01-01`)
+        Result.countDocuments({ status: 'submitted', isPassed: false }),
+        Exam.find()
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .populate('createdBy', 'name')
+          .lean(),
+        Result.find()
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .populate('studentId', 'name')
+          .populate('examId', 'title')
+          .lean(),
+        Exam.aggregate([
+          {
+            $group: {
+              _id: '$subject',
+              count: { $sum: 1 },
+              totalStudents: { $sum: '$totalStudents' },
+              averageScore: { $avg: '$averageScore' }
             }
           }
-        },
-        { $group: { _id: { $month: "$createdAt" }, count: { $sum: 1 } } }
+        ]),
+        Exam.aggregate([
+          {
+            $match: {
+              createdAt: {
+                $gte: new Date(`${currentYear}-01-01`),
+                $lt: new Date(`${currentYear + 1}-01-01`)
+              }
+            }
+          },
+          { $group: { _id: { $month: "$createdAt" }, count: { $sum: 1 } } }
+        ]),
+        Result.aggregate([
+          {
+            $match: {
+              createdAt: {
+                $gte: new Date(`${currentYear}-01-01`),
+                $lt: new Date(`${currentYear + 1}-01-01`)
+              },
+              status: 'submitted'
+            }
+          },
+          { $group: { _id: { $month: "$createdAt" }, count: { $sum: 1 }, passed: { $sum: { $cond: ["$isPassed", 1, 0] } } } }
+        ]),
+        User.countDocuments({ lastLogin: { $gte: oneDayAgo } })
       ]);
 
-      const monthlyResults = await Result.aggregate([
-        {
-          $match: {
-            createdAt: {
-              $gte: new Date(`${currentYear}-01-01`),
-              $lt: new Date(`${currentYear + 1}-01-01`)
-            },
-            status: 'submitted'
-          }
-        },
-        { $group: { _id: { $month: "$createdAt" }, count: { $sum: 1 }, passed: { $sum: { $cond: ["$isPassed", 1, 0] } } } }
-      ]);
-      
       const memoryUsage = Math.round((process.memoryUsage().heapUsed / process.memoryUsage().heapTotal) * 100);
-      
-      const oneDayAgo = new Date();
-      oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-      const activeUsers = await User.countDocuments({ lastLogin: { $gte: oneDayAgo } });
 
       res.json({
         stats: {
@@ -135,13 +135,15 @@ router.get('/users',
         ];
       }
 
-      const users = await User.find(query)
-        .select('-password -refreshToken -resetPasswordToken -resetPasswordExpire')
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(parseInt(limit));
-
-      const total = await User.countDocuments(query);
+      const [users, total] = await Promise.all([
+        User.find(query)
+          .select('-password -refreshToken -resetPasswordToken -resetPasswordExpire')
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(parseInt(limit))
+          .lean(),
+        User.countDocuments(query)
+      ]);
 
       res.json({
         users,
@@ -206,8 +208,8 @@ router.delete('/users/:userId',
         return res.status(404).json({ message: 'User not found' });
       }
       
-      if (user.role === 'admin') {
-        return res.status(403).json({ message: 'Cannot delete admin account' });
+      if (user.role === 'admin' || userId === req.user._id.toString()) {
+        return res.status(403).json({ message: 'Cannot delete admin account or your own account' });
       }
       
       // Delete user's results
@@ -238,13 +240,15 @@ router.get('/exams',
 
       if (status) query.status = status;
 
-      const exams = await Exam.find(query)
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(parseInt(limit))
-        .populate('createdBy', 'name email');
-
-      const total = await Exam.countDocuments(query);
+      const [exams, total] = await Promise.all([
+        Exam.find(query)
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(parseInt(limit))
+          .populate('createdBy', 'name email')
+          .lean(),
+        Exam.countDocuments(query)
+      ]);
 
       res.json({
         exams,

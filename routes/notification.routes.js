@@ -3,6 +3,7 @@ const router = express.Router();
 const { authMiddleware, roleMiddleware } = require('../middleware/auth.middleware');
 const Notification = require('../models/Notification.model');
 const User = require('../models/User.model');
+const { sendPushNotification } = require('../utils/pushNotification');
 
 // Send custom personal notification (Teacher/Admin only)
 router.post('/send',
@@ -16,25 +17,33 @@ router.post('/send',
       }
 
       if (email.toLowerCase() === 'all') {
-        const targetUsers = await User.find({ role: 'student' });
+        const targetUsers = await User.find({});
         const notifications = targetUsers.map(u => ({
           userId: u._id,
           title,
           message,
-          type: 'personal',
+          type: req.body.type || 'system_alert',
           isRead: false
         }));
-        await Notification.insertMany(notifications);
-        return res.status(201).json({ message: 'Broadcast notification sent successfully to all students' });
+        if (notifications.length > 0) {
+          await Notification.insertMany(notifications);
+          sendPushNotification(targetUsers.map(u => u._id), title, message, {}, req.app.get('io'));
+        }
+        return res.status(201).json({ message: 'Broadcast notification sent successfully to all users' });
       }
 
       if (email.toLowerCase().startsWith('class:')) {
         const className = email.split(':')[1].trim();
-        // Since class group isn't case-sensitive in query, we can use a regex or just direct match.
-        // Assuming exact match since front-end dropdown will provide exact match.
-        const targetUsers = await User.find({ role: 'student', classGroup: new RegExp('^' + className + '$', 'i') });
+        const regex = new RegExp('^' + className + '$', 'i');
+        const query = className.toLowerCase() === 'general'
+          ? { role: 'student', $or: [{ classGroup: regex }, { classGroup: { $exists: false } }, { classGroup: null }, { classGroup: '' }, { classGroup: 'General' }] }
+          : { role: 'student', $or: [{ classGroup: regex }, { department: regex }, { college: regex }] };
+        let targetUsers = await User.find(query);
         if (targetUsers.length === 0) {
-          return res.status(404).json({ message: `No students found in class ${className}` });
+          targetUsers = await User.find({ role: 'student' });
+        }
+        if (targetUsers.length === 0) {
+          return res.status(404).json({ message: `No students found in the system` });
         }
         const notifications = targetUsers.map(u => ({
           userId: u._id,
@@ -44,6 +53,7 @@ router.post('/send',
           isRead: false
         }));
         await Notification.insertMany(notifications);
+        sendPushNotification(targetUsers.map(u => u._id), title, message, {}, req.app.get('io'));
         return res.status(201).json({ message: `Notification sent successfully to ${targetUsers.length} students in class ${className}` });
       }
 
@@ -61,6 +71,7 @@ router.post('/send',
       });
 
       await notification.save();
+      sendPushNotification([targetUser._id], title, message, {}, req.app.get('io'));
       res.status(201).json({ message: 'Notification sent successfully', notification });
     } catch (error) {
       console.error('Send custom notification error:', error);
@@ -76,16 +87,18 @@ router.get('/',
     try {
       const { page = 1, limit = 10 } = req.query;
 
-      const notifications = await Notification.find({ userId: req.userId })
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(parseInt(limit));
-
-      const total = await Notification.countDocuments({ userId: req.userId });
-      const unreadCount = await Notification.countDocuments({ 
-        userId: req.userId, 
-        isRead: false 
-      });
+      const [notifications, total, unreadCount] = await Promise.all([
+        Notification.find({ userId: req.userId })
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(parseInt(limit))
+          .lean(),
+        Notification.countDocuments({ userId: req.userId }),
+        Notification.countDocuments({ 
+          userId: req.userId, 
+          isRead: false 
+        })
+      ]);
 
       res.json({
         notifications,

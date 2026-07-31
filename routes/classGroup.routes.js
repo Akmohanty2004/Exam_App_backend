@@ -6,7 +6,7 @@ const ClassGroup = require('../models/ClassGroup.model');
 // Get all active classes (Available to everyone authenticated)
 router.get('/', async (req, res) => {
   try {
-    const classes = await ClassGroup.find({ isActive: true }).sort({ name: 1 });
+    const classes = await ClassGroup.find({}).sort({ name: 1 });
     res.json({ classes });
   } catch (error) {
     console.error('Get classes error:', error);

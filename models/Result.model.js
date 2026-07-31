@@ -99,6 +99,8 @@ resultSchema.index({ examId: 1, studentId: 1 }, { unique: true });
 // Index for faster queries
 resultSchema.index({ studentId: 1, status: 1 });
 resultSchema.index({ examId: 1, isPassed: 1 });
+resultSchema.index({ examId: 1, status: 1, isPassed: 1, percentage: -1, obtainedMarks: -1 });
+resultSchema.index({ status: 1, percentage: -1 });
 
 const Result = mongoose.model('Result', resultSchema);
 

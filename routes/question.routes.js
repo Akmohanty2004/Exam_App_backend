@@ -128,7 +128,7 @@ router.get('/exam/:examId',
       const questions = await Question.find({ 
         examId: req.params.examId,
         isActive: true 
-      }).sort({ order: 1 });
+      }).sort({ order: 1 }).lean();
 
       res.json({ questions });
     } catch (error) {

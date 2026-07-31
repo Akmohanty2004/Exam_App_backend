@@ -63,6 +63,7 @@ const questionSchema = new mongoose.Schema({
 
 // Index for faster queries
 questionSchema.index({ examId: 1, order: 1 });
+questionSchema.index({ examId: 1, isActive: 1 });
 
 const Question = mongoose.model('Question', questionSchema);
 

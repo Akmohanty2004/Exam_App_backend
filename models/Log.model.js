@@ -19,7 +19,7 @@ const logSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: {}
   },
-  ip: {
+  ip: { 
     type: String
   },
   userAgent: {
