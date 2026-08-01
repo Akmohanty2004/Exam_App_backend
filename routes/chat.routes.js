@@ -126,6 +126,9 @@ router.get('/contacts', authMiddleware, async (req, res) => {
           isSocketConnected = true;
         }
       }
+      if (!isSocketConnected) {
+        isSocketConnected = u.isOnline;
+      }
       
       const unreadCount = await Message.countDocuments({
         sender: u._id,
