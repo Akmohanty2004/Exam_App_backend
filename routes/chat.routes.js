@@ -93,7 +93,7 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
 
     sendPushNotification(
       receiverId,
-      'New Message',
+      populatedMessage.sender ? `New Message from ${populatedMessage.sender.name}` : 'New Message',
       messageType === 'text' ? (content || 'New chat message') : `Sent a new ${messageType}`,
       { messageId: newMessage._id, senderId },
       io
