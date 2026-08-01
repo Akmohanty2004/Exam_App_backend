@@ -19,7 +19,7 @@ router.post('/send',
       const cleanInput = email.trim().toLowerCase();
 
       if (cleanInput === 'all') {
-        const targetUsers = await User.find({});
+        const targetUsers = await User.find({ _id: { $ne: req.user.id } });
         const notifications = targetUsers.map(u => ({
           userId: u._id,
           title,
@@ -40,9 +40,9 @@ router.post('/send',
         const query = className.toLowerCase() === 'general'
           ? { role: 'student', $or: [{ classGroup: regex }, { classGroup: { $exists: false } }, { classGroup: null }, { classGroup: '' }, { classGroup: 'General' }] }
           : { role: 'student', $or: [{ classGroup: regex }, { department: regex }, { college: regex }] };
-        let targetUsers = await User.find(query);
+        let targetUsers = await User.find({ ...query, _id: { $ne: req.user.id } });
         if (targetUsers.length === 0) {
-          targetUsers = await User.find({ role: 'student' });
+          targetUsers = await User.find({ role: 'student', _id: { $ne: req.user.id } });
         }
         if (targetUsers.length === 0) {
           return res.status(404).json({ message: `No students found in the system` });
