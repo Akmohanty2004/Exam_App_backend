@@ -116,13 +116,23 @@ router.get('/contacts', authMiddleware, async (req, res) => {
     
     const users = await User.find(query).select('name email role profileImage isOnline lastSeen').lean();
     
+    const io = req.app.get('io');
     const contactsWithUnread = await Promise.all(users.map(async (u) => {
+      const roomStr = String(u._id);
+      let isSocketConnected = false;
+      if (io && io.sockets && io.sockets.adapter && io.sockets.adapter.rooms) {
+        const room = io.sockets.adapter.rooms.get(roomStr);
+        if (room && room.size > 0) {
+          isSocketConnected = true;
+        }
+      }
+      
       const unreadCount = await Message.countDocuments({
         sender: u._id,
         receiver: req.user.id,
         isRead: false
       });
-      return { ...u, unreadCount };
+      return { ...u, isOnline: isSocketConnected, unreadCount };
     }));
     
     res.json(contactsWithUnread);
