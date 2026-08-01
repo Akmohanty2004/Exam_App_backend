@@ -88,7 +88,6 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
     if (io) {
       io.to(String(receiverId)).emit('receive_message', populatedMessage);
       io.to(String(senderId)).emit('receive_message', populatedMessage);
-      io.emit('receive_message', populatedMessage);
     }
 
     sendPushNotification(

@@ -461,7 +461,8 @@ router.post('/reset-password',
 // Logout
 router.post('/logout', authMiddleware, async (req, res) => {
   try {
-    // Clear any session/token data if needed
+    // Clear expoPushToken so the device doesn't receive notifications for the logged-out user
+    await User.findByIdAndUpdate(req.userId, { expoPushToken: '' });
     res.json({ message: 'Logged out successfully' });
   } catch (error) {
     console.error('Logout error:', error);
