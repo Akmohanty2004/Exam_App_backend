@@ -34,7 +34,7 @@ const sendPushNotification = async (userIds, title, message, data = {}, io = nul
 
     const pushMessages = [];
     users.forEach(user => {
-      if (user.expoPushToken && user.expoPushToken.startsWith('ExponentPushToken')) {
+      if (user.expoPushToken && (user.expoPushToken.startsWith('ExponentPushToken') || user.expoPushToken.startsWith('ExpoPushToken'))) {
         pushMessages.push({
           to: user.expoPushToken,
           sound: 'default',
