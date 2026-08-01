@@ -16,7 +16,9 @@ router.post('/send',
         return res.status(400).json({ message: 'Email, title, and message are required' });
       }
 
-      if (email.toLowerCase() === 'all') {
+      const cleanInput = email.trim().toLowerCase();
+
+      if (cleanInput === 'all') {
         const targetUsers = await User.find({});
         const notifications = targetUsers.map(u => ({
           userId: u._id,
@@ -32,8 +34,8 @@ router.post('/send',
         return res.status(201).json({ message: 'Broadcast notification sent successfully to all users' });
       }
 
-      if (email.toLowerCase().startsWith('class:')) {
-        const className = email.split(':')[1].trim();
+      if (cleanInput.startsWith('class:')) {
+        const className = email.trim().split(':')[1].trim();
         const regex = new RegExp('^' + className + '$', 'i');
         const query = className.toLowerCase() === 'general'
           ? { role: 'student', $or: [{ classGroup: regex }, { classGroup: { $exists: false } }, { classGroup: null }, { classGroup: '' }, { classGroup: 'General' }] }
@@ -57,9 +59,24 @@ router.post('/send',
         return res.status(201).json({ message: `Notification sent successfully to ${targetUsers.length} students in class ${className}` });
       }
 
-      const targetUser = await User.findOne({ email: email.toLowerCase() });
+      let targetUser = await User.findOne({ email: cleanInput });
       if (!targetUser) {
-        return res.status(404).json({ message: 'User not found with this email' });
+        // Fallback: try matching by classGroup or department if email wasn't found
+        const regex = new RegExp('^' + email.trim() + '$', 'i');
+        const classUsers = await User.find({ role: 'student', $or: [{ classGroup: regex }, { department: regex }, { college: regex }] });
+        if (classUsers.length > 0) {
+          const notifications = classUsers.map(u => ({
+            userId: u._id,
+            title,
+            message,
+            type: 'personal',
+            isRead: false
+          }));
+          await Notification.insertMany(notifications);
+          sendPushNotification(classUsers.map(u => u._id), title, message, {}, req.app.get('io'));
+          return res.status(201).json({ message: `Notification sent successfully to ${classUsers.length} students` });
+        }
+        return res.status(404).json({ message: 'User not found with this email or class group' });
       }
 
       const notification = new Notification({

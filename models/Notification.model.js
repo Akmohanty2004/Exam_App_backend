@@ -8,7 +8,7 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['exam_created', 'exam_updated', 'exam_cancelled', 'exam_starting', 'exam_ending', 'result_published', 'password_changed', 'profile_updated', 'system', 'exam_submitted'],
+    default: 'system',
     required: true
   },
   title: {
