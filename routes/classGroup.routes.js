@@ -3,11 +3,27 @@ const router = express.Router();
 const { authMiddleware, roleMiddleware } = require('../middleware/auth.middleware');
 const ClassGroup = require('../models/ClassGroup.model');
 
+const User = require('../models/User.model');
+
 // Get all active classes (Available to everyone authenticated)
 router.get('/', async (req, res) => {
   try {
     const classes = await ClassGroup.find({}).sort({ name: 1 });
-    res.json({ classes });
+    
+    // Add student count to each class
+    const classesWithCounts = await Promise.all(classes.map(async (cls) => {
+      // A student's classGroup can be comma-separated like "MERN, Java"
+      // We use a regex that matches the class name exactly within those comma-separated values
+      const regex = new RegExp(`(^|,)\\s*${cls.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(,|$)`, 'i');
+      const count = await User.countDocuments({ role: 'student', classGroup: regex });
+      
+      return { 
+        ...cls.toObject(), 
+        studentCount: count 
+      };
+    }));
+    
+    res.json({ classes: classesWithCounts });
   } catch (error) {
     console.error('Get classes error:', error);
     res.status(500).json({ message: 'Failed to fetch classes' });

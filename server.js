@@ -57,18 +57,37 @@ io.on('connection', (socket) => {
     console.log(`User ${userId} joined their personal room (active sockets: ${count})`);
   });
 
+  socket.on('set_status', async (data) => {
+    try {
+      const roomStr = connectedUsers.get(socket.id);
+      if (roomStr) {
+        await User.findByIdAndUpdate(roomStr, { isOnline: data.isOnline, lastSeen: new Date() });
+        io.emit(data.isOnline ? 'user_online' : 'user_offline', roomStr);
+      }
+    } catch (err) {
+      console.error('Error in set_status:', err);
+    }
+  });
+
   socket.on('check_online_status', async (targetUserId) => {
     try {
       const roomStr = String(targetUserId);
       const isSocketConnected = (userSocketCounts.get(roomStr) || 0) > 0 || (io.sockets.adapter.rooms.get(roomStr)?.size || 0) > 0;
       let isOnline = isSocketConnected;
+      let lastSeen = null;
+      
       if (!isOnline) {
         const targetUser = await User.findById(targetUserId);
         if (targetUser) {
-          isOnline = targetUser.isOnline;
+          lastSeen = targetUser.lastSeen;
+          if (targetUser.isOnline) {
+            // Self-heal stale online status
+            await User.findByIdAndUpdate(targetUserId, { isOnline: false, lastSeen: new Date() });
+            lastSeen = new Date();
+          }
         }
       }
-      socket.emit('user_status_response', { userId: targetUserId, isOnline });
+      socket.emit('user_status_response', { userId: targetUserId, isOnline, lastSeen });
     } catch (err) {
       console.error('Error checking user status:', err);
     }

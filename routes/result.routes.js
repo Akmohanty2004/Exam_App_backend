@@ -301,6 +301,8 @@ router.get('/exam/:examId',
         averageScore: results.reduce((sum, r) => sum + r.obtainedMarks, 0) / (results.length || 1),
         highestScore: results.length > 0 ? Math.max(...results.map(r => r.obtainedMarks)) : 0,
         lowestScore: results.length > 0 ? Math.min(...results.map(r => r.obtainedMarks)) : 0,
+        averageCorrect: results.reduce((sum, r) => sum + (r.correctAnswers || 0), 0) / (results.length || 1),
+        averageWrong: results.reduce((sum, r) => sum + (r.wrongAnswers || 0), 0) / (results.length || 1),
         gradeDistribution: {
           'A+': results.filter(r => r.grade === 'A+').length,
           'A': results.filter(r => r.grade === 'A').length,
@@ -312,9 +314,22 @@ router.get('/exam/:examId',
         }
       };
 
+      // Determine missing students
+      const classQuery = { role: 'student', isActive: true };
+      if (exam.classGroup && exam.classGroup !== 'General') {
+        classQuery.classGroup = exam.classGroup;
+      }
+      
+      const assignedStudents = await User.find(classQuery).select('name email profileImage').lean();
+      
+      const missingStudents = assignedStudents.filter(student => 
+        !results.some(r => r.studentId && r.studentId._id.toString() === student._id.toString())
+      );
+
       res.json({
         results,
         stats,
+        missingStudents,
         isPublished: exam.isResultPublished
       });
     } catch (error) {
