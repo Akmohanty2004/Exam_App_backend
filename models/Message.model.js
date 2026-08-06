@@ -40,7 +40,9 @@ const messageSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for faster queries fetching conversation between two users
-messageSchema.index({ sender: 1, receiver: 1 });
+// Index for faster queries fetching conversation between two users and counting unread messages
+messageSchema.index({ sender: 1, receiver: 1, createdAt: 1 });
+messageSchema.index({ receiver: 1, sender: 1, isRead: 1 });
+messageSchema.index({ receiver: 1, isRead: 1 });
 
 module.exports = mongoose.model('Message', messageSchema);

@@ -20,11 +20,10 @@ const authMiddleware = async (req, res, next) => {
       return res.status(401).json({ message: 'Account is deactivated' });
     }
 
-    // Real-time online status logic: Update lastLogin if older than 1 min
-    const oneMinAgo = new Date(Date.now() - 60 * 1000);
-    if (!user.lastLogin || user.lastLogin < oneMinAgo) {
-      user.lastLogin = new Date();
-      await user.save();
+    // Real-time online status logic: Update lastLogin asynchronously if older than 2 mins
+    const twoMinsAgo = new Date(Date.now() - 2 * 60 * 1000);
+    if (!user.lastLogin || user.lastLogin < twoMinsAgo) {
+      User.updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } }).catch(() => {});
     }
 
     req.user = user;

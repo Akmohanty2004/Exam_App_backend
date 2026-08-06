@@ -105,6 +105,8 @@ router.post('/send', authMiddleware, chatFileUpload, async (req, res) => {
   }
 });
 
+const mongoose = require('mongoose');
+
 // Get Contacts (Users you can chat with)
 router.get('/contacts', authMiddleware, async (req, res) => {
   try {
@@ -116,8 +118,19 @@ router.get('/contacts', authMiddleware, async (req, res) => {
     
     const users = await User.find(query).select('name email role profileImage isOnline lastSeen').lean();
     
+    // Single aggregation query to fetch unread counts for all contacts at once!
+    const unreadAgg = await Message.aggregate([
+      { $match: { receiver: new mongoose.Types.ObjectId(req.user.id), isRead: false } },
+      { $group: { _id: '$sender', count: { $sum: 1 } } }
+    ]);
+
+    const unreadMap = {};
+    unreadAgg.forEach(item => {
+      unreadMap[String(item._id)] = item.count;
+    });
+
     const io = req.app.get('io');
-    const contactsWithUnread = await Promise.all(users.map(async (u) => {
+    const contactsWithUnread = users.map((u) => {
       const roomStr = String(u._id);
       let isSocketConnected = false;
       if (io && io.sockets && io.sockets.adapter && io.sockets.adapter.rooms) {
@@ -130,13 +143,9 @@ router.get('/contacts', authMiddleware, async (req, res) => {
         isSocketConnected = u.isOnline;
       }
       
-      const unreadCount = await Message.countDocuments({
-        sender: u._id,
-        receiver: req.user.id,
-        isRead: false
-      });
+      const unreadCount = unreadMap[String(u._id)] || 0;
       return { ...u, isOnline: isSocketConnected, unreadCount };
-    }));
+    });
     
     res.json(contactsWithUnread);
   } catch (error) {
