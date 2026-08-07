@@ -59,10 +59,11 @@ io.on('connection', (socket) => {
 
   socket.on('set_status', async (data) => {
     try {
-      const roomStr = connectedUsers.get(socket.id);
+      const roomStr = data?.userId ? String(data.userId) : connectedUsers.get(socket.id);
       if (roomStr) {
-        await User.findByIdAndUpdate(roomStr, { isOnline: data.isOnline, lastSeen: new Date() });
-        io.emit(data.isOnline ? 'user_online' : 'user_offline', roomStr);
+        const isOnline = Boolean(data.isOnline);
+        await User.findByIdAndUpdate(roomStr, { isOnline, lastSeen: new Date() });
+        io.emit(isOnline ? 'user_online' : 'user_offline', roomStr);
       }
     } catch (err) {
       console.error('Error in set_status:', err);
@@ -184,10 +185,11 @@ const connectDB = async () => {
   dbConnectPromise = (async () => {
     try {
       await mongoose.connect(process.env.MONGODB_URI, {
-        serverSelectionTimeoutMS: 10000,
-        connectTimeoutMS: 10000,
+        serverSelectionTimeoutMS: 30000, // increased from 10000
+        connectTimeoutMS: 30000,         // increased from 10000
         socketTimeoutMS: 45000,
         maxPoolSize: 20,
+        family: 4,                       // Force IPv4 to avoid DNS/IPv6 related Atlas timeouts
       });
       console.log('Connected to MongoDB Atlas');
     } catch (error) {

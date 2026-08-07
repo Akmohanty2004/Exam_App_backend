@@ -22,6 +22,7 @@ router.post('/send',
         const targetUsers = await User.find({ _id: { $ne: req.user.id } });
         const notifications = targetUsers.map(u => ({
           userId: u._id,
+          sender: req.user.id,
           title,
           message,
           type: req.body.type || 'system_alert',
@@ -29,7 +30,7 @@ router.post('/send',
         }));
         if (notifications.length > 0) {
           await Notification.insertMany(notifications);
-          sendPushNotification(targetUsers.map(u => u._id), title, message, {}, req.app.get('io'));
+          sendPushNotification(targetUsers.map(u => u._id), title, message, { senderId: req.user.id }, req.app.get('io'));
         }
         return res.status(201).json({ message: 'Broadcast notification sent successfully to all users' });
       }
@@ -49,13 +50,14 @@ router.post('/send',
         }
         const notifications = targetUsers.map(u => ({
           userId: u._id,
+          sender: req.user.id,
           title,
           message,
           type: 'personal',
           isRead: false
         }));
         await Notification.insertMany(notifications);
-        sendPushNotification(targetUsers.map(u => u._id), title, message, {}, req.app.get('io'));
+        sendPushNotification(targetUsers.map(u => u._id), title, message, { senderId: req.user.id }, req.app.get('io'));
         return res.status(201).json({ message: `Notification sent successfully to ${targetUsers.length} students in class ${className}` });
       }
 
@@ -67,13 +69,14 @@ router.post('/send',
         if (classUsers.length > 0) {
           const notifications = classUsers.map(u => ({
             userId: u._id,
+            sender: req.user.id,
             title,
             message,
             type: 'personal',
             isRead: false
           }));
           await Notification.insertMany(notifications);
-          sendPushNotification(classUsers.map(u => u._id), title, message, {}, req.app.get('io'));
+          sendPushNotification(classUsers.map(u => u._id), title, message, { senderId: req.user.id }, req.app.get('io'));
           return res.status(201).json({ message: `Notification sent successfully to ${classUsers.length} students` });
         }
         return res.status(404).json({ message: 'User not found with this email or class group' });
@@ -81,6 +84,7 @@ router.post('/send',
 
       const notification = new Notification({
         userId: targetUser._id,
+        sender: req.user.id,
         title,
         message,
         type: 'personal',
@@ -88,7 +92,7 @@ router.post('/send',
       });
 
       await notification.save();
-      sendPushNotification([targetUser._id], title, message, {}, req.app.get('io'));
+      sendPushNotification([targetUser._id], title, message, { senderId: req.user.id }, req.app.get('io'));
       res.status(201).json({ message: 'Notification sent successfully', notification });
     } catch (error) {
       console.error('Send custom notification error:', error);
@@ -106,6 +110,7 @@ router.get('/',
 
       const [notifications, total, unreadCount] = await Promise.all([
         Notification.find({ userId: req.userId })
+          .populate('sender', 'name role profileImage')
           .sort({ createdAt: -1 })
           .skip((page - 1) * limit)
           .limit(parseInt(limit))

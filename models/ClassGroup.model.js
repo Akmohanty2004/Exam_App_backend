@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const classGroupSchema = new mongoose.Schema({
-  name: {
+  name: { 
     type: String,
     required: true,
     unique: true,

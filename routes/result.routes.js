@@ -517,7 +517,6 @@ router.get('/toppers', authMiddleware, async (req, res) => {
     })
       .sort({ percentage: -1, obtainedMarks: -1 })
       .populate('studentId', 'name profileImage classGroup department email college')
-      .select('examId studentId percentage likes isPassed')
       .lean();
 
     const topByExam = {};
@@ -531,12 +530,19 @@ router.get('/toppers', authMiddleware, async (req, res) => {
     const toppersResults = exams.map(exam => {
       const topResult = topByExam[exam._id.toString()];
       if (topResult && topResult.studentId && topResult.isPassed === true) {
+        // Explicitly map the populated properties to bypass any serialization quirks
+        const studentObj = {
+          _id: topResult.studentId._id || topResult.studentId,
+          name: topResult.studentId.name || 'Unknown',
+          profileImage: topResult.studentId.profileImage || null
+        };
+        
         return {
           examId: exam._id,
           examTitle: exam.title,
           examDate: exam.date,
           resultId: topResult._id,
-          student: topResult.studentId,
+          student: studentObj,
           score: topResult.percentage,
           likes: topResult.likes || [],
           likedByMe: topResult.likes?.map(id => id.toString()).includes(req.userId?.toString()) || false
