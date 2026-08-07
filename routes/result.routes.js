@@ -485,15 +485,20 @@ router.get('/leaderboard', authMiddleware, async (req, res) => {
 // Get toppers for published exams
 router.get('/toppers', authMiddleware, async (req, res) => {
   try {
-    let query = { status: { $in: ['published', 'ongoing', 'completed'] } };
-    
+    let examIds = [];
+    let exams = [];
+
     if (req.user.role === 'teacher') {
-      query.createdBy = req.user._id || req.user.id;
+      const query = { status: { $in: ['published', 'ongoing', 'completed'] }, createdBy: req.user._id || req.user.id };
+      exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
+      examIds = exams.map(e => e._id);
     } else if (req.user.role === 'admin') {
-      // Admins see all exams
-      query = {};
+      const query = { status: { $in: ['published', 'ongoing', 'completed'] } };
+      exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
+      examIds = exams.map(e => e._id);
     } else {
-      query.isResultPublished = true; // Students only see toppers for exams where results are published
+      // For students, fetch the 10 most recent exams they are eligible for, EXACTLY like their Dashboard exam list.
+      const query = { status: { $in: ['published', 'ongoing', 'completed'] } };
       const userClass = req.user.classGroup || 'General';
       if (userClass !== 'General') {
         query.$or = [
@@ -502,16 +507,18 @@ router.get('/toppers', authMiddleware, async (req, res) => {
           { classGroup: { $exists: false } }
         ];
       }
+      
+      exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
+      examIds = exams.map(e => e._id);
     }
 
-    // Find exams (limit to 10 recent exams for 3x faster loading)
-    const exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
+    if (examIds.length === 0) {
+      return res.json({ toppers: [] });
+    }
     
-    // Batch query highest results for these 10 exams at once
-    const examIds = exams.map(e => e._id);
+    // Batch query highest results for these exams at once
     const candidateResults = await Result.find({
       examId: { $in: examIds },
-      status: { $in: ['submitted', 'published'] },
       isPassed: true
     })
       .sort({ percentage: -1, obtainedMarks: -1 })
@@ -528,8 +535,7 @@ router.get('/toppers', authMiddleware, async (req, res) => {
 
     const toppersResults = exams.map(exam => {
       const topResult = topByExam[exam._id.toString()];
-      if (topResult && topResult.studentId && topResult.isPassed === true) {
-        // Explicitly map the populated properties to bypass any serialization quirks
+      if (topResult && topResult.studentId) {
         const studentObj = {
           _id: topResult.studentId._id || topResult.studentId,
           name: topResult.studentId.name || 'Unknown',
