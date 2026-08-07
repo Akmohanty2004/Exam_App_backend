@@ -493,17 +493,12 @@ router.get('/toppers', authMiddleware, async (req, res) => {
       // Admins see all exams
       query = {};
     } else {
-      // Removed query.isResultPublished = true so students can always see toppers for exams they took
+      query.isResultPublished = true; // Students only see toppers for exams where results are published
       const userClass = req.user.classGroup || 'General';
       if (userClass !== 'General') {
         query.$or = [
           { classGroup: { $regex: new RegExp(userClass, 'i') } },
           { classGroup: { $regex: new RegExp('General', 'i') } },
-          { classGroup: { $exists: false } }
-        ];
-      } else {
-        query.$or = [
-          { classGroup: { $regex: new RegExp('General', 'i') } }, 
           { classGroup: { $exists: false } }
         ];
       }
