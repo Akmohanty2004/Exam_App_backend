@@ -490,14 +490,15 @@ router.get('/toppers', authMiddleware, async (req, res) => {
 
     if (req.user.role === 'teacher') {
       const query = { status: { $in: ['published', 'ongoing', 'completed'] }, createdBy: req.user._id || req.user.id };
-      exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
+      exams = await Exam.find(query).select('title date').sort({ date: -1 }).limit(10).lean();
       examIds = exams.map(e => e._id);
     } else if (req.user.role === 'admin') {
       const query = { status: { $in: ['published', 'ongoing', 'completed'] } };
-      exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
+      exams = await Exam.find(query).select('title date').sort({ date: -1 }).limit(10).lean();
       examIds = exams.map(e => e._id);
     } else {
       // For students, fetch the 10 most recent exams they are eligible for, EXACTLY like their Dashboard exam list.
+      // We do NOT require isResultPublished: true, so students can see the toppers exactly when teachers see them.
       const query = { status: { $in: ['published', 'ongoing', 'completed'] } };
       const userClass = req.user.classGroup || 'General';
       if (userClass !== 'General') {
@@ -508,7 +509,8 @@ router.get('/toppers', authMiddleware, async (req, res) => {
         ];
       }
       
-      exams = await Exam.find(query).select('title date').sort({ createdAt: -1 }).limit(10).lean();
+      // Sort by date (exam date) instead of createdAt, so we get exams that recently occurred!
+      exams = await Exam.find(query).select('title date').sort({ date: -1 }).limit(10).lean();
       examIds = exams.map(e => e._id);
     }
 
