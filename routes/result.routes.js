@@ -485,23 +485,27 @@ router.get('/leaderboard', authMiddleware, async (req, res) => {
 // Get toppers for published exams
 router.get('/toppers', authMiddleware, async (req, res) => {
   try {
-    let query = {};
+    let query = { status: { $in: ['published', 'ongoing', 'completed'] } };
+    
     if (req.user.role === 'teacher') {
       query.createdBy = req.user._id || req.user.id;
     } else if (req.user.role === 'admin') {
-      // Admins see all exams (no isResultPublished restriction)
+      // Admins see all exams
       query = {};
     } else {
-      query.isResultPublished = true;
+      // Removed query.isResultPublished = true so students can always see toppers for exams they took
       const userClass = req.user.classGroup || 'General';
       if (userClass !== 'General') {
         query.$or = [
           { classGroup: { $regex: new RegExp(userClass, 'i') } },
-          { classGroup: 'General' },
+          { classGroup: { $regex: new RegExp('General', 'i') } },
           { classGroup: { $exists: false } }
         ];
       } else {
-        query.$or = [{ classGroup: 'General' }, { classGroup: { $exists: false } }];
+        query.$or = [
+          { classGroup: { $regex: new RegExp('General', 'i') } }, 
+          { classGroup: { $exists: false } }
+        ];
       }
     }
 
